@@ -12,11 +12,16 @@ type BytesColumn struct {
 	arena   []byte
 }
 
-func NewBytesColumn() *BytesColumn {
+func NewBytesColumn(capacity int) *BytesColumn {
+	c := normalizeCapacityHint(capacity)
+	arenaCap := c * 16
+	if arenaCap < 4096 {
+		arenaCap = 4096
+	}
 	return &BytesColumn{
-		offsets: make([]uint32, 0, 256),
-		lengths: make([]uint32, 0, 256),
-		arena:   make([]byte, 0, 4096),
+		offsets: make([]uint32, 0, c),
+		lengths: make([]uint32, 0, c),
+		arena:   make([]byte, 0, arenaCap),
 	}
 }
 
@@ -38,15 +43,13 @@ func (c *BytesColumn) Append(v []byte) {
 }
 
 func (c *BytesColumn) Encode(dst *bytes.Buffer) {
-	buf := appendUvarint(nil, uint64(len(c.offsets)))
+	writeUvarint(dst, uint64(len(c.offsets)))
 	for i := range c.offsets {
 		length := c.lengths[i]
-		buf = appendUvarint(buf, uint64(length))
+		writeUvarint(dst, uint64(length))
 		start := c.offsets[i]
-		end := start + length
-		buf = append(buf, c.arena[start:end]...)
+		dst.Write(c.arena[start : start+length])
 	}
-	dst.Write(buf)
 }
 
 func (c *BytesColumn) Reset() {

@@ -210,3 +210,199 @@ func valueAsBytes(v reflect.Value) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("scrt: unsupported bytes source %s", v.Kind())
 }
+
+func anyAsBool(v any) (bool, error) {
+	switch val := v.(type) {
+	case bool:
+		return val, nil
+	case int:
+		return val != 0, nil
+	case int8:
+		return val != 0, nil
+	case int16:
+		return val != 0, nil
+	case int32:
+		return val != 0, nil
+	case int64:
+		return val != 0, nil
+	case uint:
+		return val != 0, nil
+	case uint8:
+		return val != 0, nil
+	case uint16:
+		return val != 0, nil
+	case uint32:
+		return val != 0, nil
+	case uint64:
+		return val != 0, nil
+	case uintptr:
+		return val != 0, nil
+	case string:
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return false, fmt.Errorf("scrt: cannot convert %q to bool", val)
+		}
+		return b, nil
+	default:
+		return false, fmt.Errorf("scrt: unsupported bool source %T", v)
+	}
+}
+
+func anyAsInt(v any) (int64, error) {
+	switch val := v.(type) {
+	case int:
+		return int64(val), nil
+	case int8:
+		return int64(val), nil
+	case int16:
+		return int64(val), nil
+	case int32:
+		return int64(val), nil
+	case int64:
+		return val, nil
+	case uint:
+		if uint64(val) > math.MaxInt64 {
+			return 0, fmt.Errorf("scrt: value %d overflows int64", val)
+		}
+		return int64(val), nil
+	case uint8:
+		return int64(val), nil
+	case uint16:
+		return int64(val), nil
+	case uint32:
+		return int64(val), nil
+	case uint64:
+		if val > math.MaxInt64 {
+			return 0, fmt.Errorf("scrt: value %d overflows int64", val)
+		}
+		return int64(val), nil
+	case uintptr:
+		if uint64(val) > math.MaxInt64 {
+			return 0, fmt.Errorf("scrt: value %d overflows int64", val)
+		}
+		return int64(val), nil
+	case string:
+		i, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("scrt: cannot parse %q as int64", val)
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("scrt: unsupported int source %T", v)
+	}
+}
+
+func anyAsUint(v any) (uint64, error) {
+	switch val := v.(type) {
+	case uint:
+		return uint64(val), nil
+	case uint8:
+		return uint64(val), nil
+	case uint16:
+		return uint64(val), nil
+	case uint32:
+		return uint64(val), nil
+	case uint64:
+		return val, nil
+	case uintptr:
+		return uint64(val), nil
+	case int:
+		if val < 0 {
+			return 0, fmt.Errorf("scrt: negative value %d cannot convert to uint64", val)
+		}
+		return uint64(val), nil
+	case int8:
+		if val < 0 {
+			return 0, fmt.Errorf("scrt: negative value %d cannot convert to uint64", val)
+		}
+		return uint64(val), nil
+	case int16:
+		if val < 0 {
+			return 0, fmt.Errorf("scrt: negative value %d cannot convert to uint64", val)
+		}
+		return uint64(val), nil
+	case int32:
+		if val < 0 {
+			return 0, fmt.Errorf("scrt: negative value %d cannot convert to uint64", val)
+		}
+		return uint64(val), nil
+	case int64:
+		if val < 0 {
+			return 0, fmt.Errorf("scrt: negative value %d cannot convert to uint64", val)
+		}
+		return uint64(val), nil
+	case string:
+		u, err := strconv.ParseUint(val, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("scrt: cannot parse %q as uint64", val)
+		}
+		return u, nil
+	default:
+		return 0, fmt.Errorf("scrt: unsupported uint source %T", v)
+	}
+}
+
+func anyAsFloat(v any) (float64, error) {
+	switch val := v.(type) {
+	case float32:
+		return float64(val), nil
+	case float64:
+		return val, nil
+	case int:
+		return float64(val), nil
+	case int8:
+		return float64(val), nil
+	case int16:
+		return float64(val), nil
+	case int32:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	case uint:
+		return float64(val), nil
+	case uint8:
+		return float64(val), nil
+	case uint16:
+		return float64(val), nil
+	case uint32:
+		return float64(val), nil
+	case uint64:
+		return float64(val), nil
+	case uintptr:
+		return float64(val), nil
+	case string:
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("scrt: cannot parse %q as float64", val)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("scrt: unsupported float source %T", v)
+	}
+}
+
+func anyAsString(v any) (string, error) {
+	switch val := v.(type) {
+	case string:
+		return val, nil
+	case []byte:
+		return string(val), nil
+	case fmt.Stringer:
+		return val.String(), nil
+	default:
+		return fmt.Sprintf("%v", v), nil
+	}
+}
+
+func anyAsBytes(v any) ([]byte, error) {
+	switch val := v.(type) {
+	case []byte:
+		dup := make([]byte, len(val))
+		copy(dup, val)
+		return dup, nil
+	case string:
+		return []byte(val), nil
+	default:
+		return nil, fmt.Errorf("scrt: unsupported bytes source %T", v)
+	}
+}

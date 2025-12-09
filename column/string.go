@@ -14,13 +14,18 @@ type StringColumn struct {
 	strLens    []uint32
 }
 
-func NewStringColumn() *StringColumn {
+func NewStringColumn(capacity int) *StringColumn {
+	c := normalizeCapacityHint(capacity)
+	arenaCap := c * 8
+	if arenaCap < 4096 {
+		arenaCap = 4096
+	}
 	return &StringColumn{
-		dict:       make(map[string]uint32, 256),
-		indexes:    make([]uint32, 0, 256),
-		arena:      make([]byte, 0, 4096),
-		strOffsets: make([]uint32, 0, 256),
-		strLens:    make([]uint32, 0, 256),
+		dict:       make(map[string]uint32, c),
+		indexes:    make([]uint32, 0, c),
+		arena:      make([]byte, 0, arenaCap),
+		strOffsets: make([]uint32, 0, c),
+		strLens:    make([]uint32, 0, c),
 	}
 }
 
@@ -41,18 +46,17 @@ func (c *StringColumn) Append(v string) {
 }
 
 func (c *StringColumn) Encode(dst *bytes.Buffer) {
-	buf := appendUvarint(nil, uint64(len(c.strOffsets)))
+	writeUvarint(dst, uint64(len(c.strOffsets)))
 	for i := range c.strOffsets {
 		length := c.strLens[i]
-		buf = appendUvarint(buf, uint64(length))
+		writeUvarint(dst, uint64(length))
 		start := c.strOffsets[i]
-		buf = append(buf, c.arena[start:start+length]...)
+		dst.Write(c.arena[start : start+length])
 	}
-	buf = appendUvarint(buf, uint64(len(c.indexes)))
+	writeUvarint(dst, uint64(len(c.indexes)))
 	for _, idx := range c.indexes {
-		buf = appendUvarint(buf, uint64(idx))
+		writeUvarint(dst, uint64(idx))
 	}
-	dst.Write(buf)
 }
 
 func (c *StringColumn) Reset() {

@@ -11,8 +11,9 @@ type Float64Column struct {
 	values []float64
 }
 
-func NewFloat64Column() *Float64Column {
-	return &Float64Column{values: make([]float64, 0, 256)}
+func NewFloat64Column(capacity int) *Float64Column {
+	c := normalizeCapacityHint(capacity)
+	return &Float64Column{values: make([]float64, 0, c)}
 }
 
 func (c *Float64Column) Append(v float64) {
@@ -20,14 +21,13 @@ func (c *Float64Column) Append(v float64) {
 }
 
 func (c *Float64Column) Encode(dst *bytes.Buffer) {
-	buf := appendUvarint(nil, uint64(len(c.values)))
+	writeUvarint(dst, uint64(len(c.values)))
 	for _, v := range c.values {
 		bits := math.Float64bits(v)
 		var tmp [8]byte
 		binary.LittleEndian.PutUint64(tmp[:], bits)
-		buf = append(buf, tmp[:]...)
+		dst.Write(tmp[:])
 	}
-	dst.Write(buf)
 }
 
 func (c *Float64Column) Reset() {

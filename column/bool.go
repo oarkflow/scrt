@@ -7,8 +7,9 @@ type BoolColumn struct {
 	values []byte
 }
 
-func NewBoolColumn() *BoolColumn {
-	return &BoolColumn{values: make([]byte, 0, 256)}
+func NewBoolColumn(capacity int) *BoolColumn {
+	c := normalizeCapacityHint(capacity)
+	return &BoolColumn{values: make([]byte, 0, c)}
 }
 
 func (c *BoolColumn) Append(v bool) {
@@ -20,9 +21,8 @@ func (c *BoolColumn) Append(v bool) {
 }
 
 func (c *BoolColumn) Encode(dst *bytes.Buffer) {
-	buf := appendUvarint(nil, uint64(len(c.values)))
-	buf = append(buf, c.values...)
-	dst.Write(buf)
+	writeUvarint(dst, uint64(len(c.values)))
+	dst.Write(c.values)
 }
 
 func (c *BoolColumn) Reset() {

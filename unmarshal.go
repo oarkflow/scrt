@@ -114,6 +114,14 @@ func decodeIntoSlice(reader *codec.Reader, s *schema.Schema, slice reflect.Value
 		if !ok {
 			break
 		}
+		hint := reader.RowsRemainingHint() + 1 // include current row
+		needed := idx + hint
+		if needed < idx+1 {
+			needed = idx + 1
+		}
+		if slice.Cap() < needed {
+			slice = growSlice(slice, needed)
+		}
 		if slice.Cap() <= idx {
 			slice = growSlice(slice, idx+1)
 		}
@@ -200,11 +208,10 @@ func assignRowToStruct(row codec.Row, dst reflect.Value, s *schema.Schema) error
 		if !fv.IsValid() || !fv.CanSet() {
 			continue
 		}
-		base := valueFromRow(s.Fields[idx].Kind, vals[idx])
-		if base == nil {
+		if !vals[idx].Set {
 			continue
 		}
-		if err := assignInterface(fv, base); err != nil {
+		if err := assignRowValue(fv, s.Fields[idx].Kind, vals[idx]); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
 		}
 	}
@@ -215,6 +222,157 @@ func assignRowToMap(row codec.Row, dst reflect.Value, s *schema.Schema) error {
 	if dst.Type().Key().Kind() != reflect.String {
 		return fmt.Errorf("scrt: map key must be string, got %s", dst.Type().Key())
 	}
+	if dst.IsNil() {
+		dst.Set(reflect.MakeMapWithSize(dst.Type(), len(s.Fields)))
+	}
+	switch m := dst.Interface().(type) {
+	case map[string]any:
+		return assignRowToMapAny(row, m, s)
+	case map[string]bool:
+		return assignRowToMapBool(row, m, s)
+	case map[string]int:
+		return assignRowToMapInt(row, m, s)
+	case map[string]int64:
+		return assignRowToMapInt64(row, m, s)
+	case map[string]uint:
+		return assignRowToMapUint(row, m, s)
+	case map[string]uint64:
+		return assignRowToMapUint64(row, m, s)
+	case map[string]float64:
+		return assignRowToMapFloat64(row, m, s)
+	case map[string]string:
+		return assignRowToMapString(row, m, s)
+	case map[string][]byte:
+		return assignRowToMapBytes(row, m, s)
+	default:
+		return assignRowToMapReflect(row, dst, s)
+	}
+}
+
+func assignRowToMapAny(row codec.Row, dst map[string]any, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		dst[field.Name] = valueFromRow(field.Kind, vals[idx])
+	}
+	return nil
+}
+
+func assignRowToMapBool(row codec.Row, dst map[string]bool, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindBool {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]bool", field.Name, field.Kind)
+		}
+		dst[field.Name] = vals[idx].Bool
+	}
+	return nil
+}
+
+func assignRowToMapInt(row codec.Row, dst map[string]int, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindInt64 {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]int", field.Name, field.Kind)
+		}
+		dst[field.Name] = int(vals[idx].Int)
+	}
+	return nil
+}
+
+func assignRowToMapInt64(row codec.Row, dst map[string]int64, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindInt64 {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]int64", field.Name, field.Kind)
+		}
+		dst[field.Name] = vals[idx].Int
+	}
+	return nil
+}
+
+func assignRowToMapUint(row codec.Row, dst map[string]uint, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindUint64 && field.Kind != schema.KindRef {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]uint", field.Name, field.Kind)
+		}
+		dst[field.Name] = uint(vals[idx].Uint)
+	}
+	return nil
+}
+
+func assignRowToMapUint64(row codec.Row, dst map[string]uint64, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindUint64 && field.Kind != schema.KindRef {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]uint64", field.Name, field.Kind)
+		}
+		dst[field.Name] = vals[idx].Uint
+	}
+	return nil
+}
+
+func assignRowToMapFloat64(row codec.Row, dst map[string]float64, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindFloat64 {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]float64", field.Name, field.Kind)
+		}
+		dst[field.Name] = vals[idx].Float
+	}
+	return nil
+}
+
+func assignRowToMapString(row codec.Row, dst map[string]string, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindString {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]string", field.Name, field.Kind)
+		}
+		dst[field.Name] = vals[idx].Str
+	}
+	return nil
+}
+
+func assignRowToMapBytes(row codec.Row, dst map[string][]byte, s *schema.Schema) error {
+	vals := row.Values()
+	for idx, field := range s.Fields {
+		if !vals[idx].Set {
+			continue
+		}
+		if field.Kind != schema.KindBytes {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string][]byte", field.Name, field.Kind)
+		}
+		dst[field.Name] = bytesForAssignment(vals[idx])
+	}
+	return nil
+}
+
+func assignRowToMapReflect(row codec.Row, dst reflect.Value, s *schema.Schema) error {
 	elemType := dst.Type().Elem()
 	vals := row.Values()
 	for idx, field := range s.Fields {
@@ -231,6 +389,172 @@ func assignRowToMap(row codec.Row, dst reflect.Value, s *schema.Schema) error {
 	return nil
 }
 
+func assignRowValue(field reflect.Value, kind schema.FieldKind, val codec.Value) error {
+	switch kind {
+	case schema.KindUint64, schema.KindRef:
+		if assignUintField(field, val.Uint) {
+			return nil
+		}
+		return assignInterface(field, val.Uint)
+	case schema.KindInt64:
+		if assignIntField(field, val.Int) {
+			return nil
+		}
+		return assignInterface(field, val.Int)
+	case schema.KindFloat64:
+		if assignFloatField(field, val.Float) {
+			return nil
+		}
+		return assignInterface(field, val.Float)
+	case schema.KindBool:
+		if assignBoolField(field, val.Bool) {
+			return nil
+		}
+		return assignInterface(field, val.Bool)
+	case schema.KindString:
+		if assignStringField(field, val.Str) {
+			return nil
+		}
+		return assignInterface(field, val.Str)
+	case schema.KindBytes:
+		data := bytesForAssignment(val)
+		if assignBytesField(field, data) {
+			return nil
+		}
+		return assignInterface(field, data)
+	default:
+		return fmt.Errorf("unsupported schema kind %d", kind)
+	}
+}
+
+func assignUintField(field reflect.Value, value uint64) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	switch f.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		f.SetUint(value)
+		return true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if f.OverflowUint(value) {
+			return false
+		}
+		f.SetInt(int64(value))
+		return true
+	}
+	return false
+}
+
+func assignIntField(field reflect.Value, value int64) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	switch f.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		f.SetInt(value)
+		return true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if value < 0 || f.OverflowUint(uint64(value)) {
+			return false
+		}
+		f.SetUint(uint64(value))
+		return true
+	}
+	return false
+}
+
+func assignFloatField(field reflect.Value, value float64) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	switch f.Kind() {
+	case reflect.Float32, reflect.Float64:
+		f.SetFloat(value)
+		return true
+	}
+	return false
+}
+
+func assignBoolField(field reflect.Value, value bool) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	if f.Kind() == reflect.Bool {
+		f.SetBool(value)
+		return true
+	}
+	return false
+}
+
+func assignStringField(field reflect.Value, value string) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	switch f.Kind() {
+	case reflect.String:
+		f.SetString(value)
+		return true
+	case reflect.Slice:
+		if f.Type().Elem().Kind() == reflect.Uint8 {
+			f.SetBytes([]byte(value))
+			return true
+		}
+	}
+	return false
+}
+
+func assignBytesField(field reflect.Value, data []byte) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	if f.Kind() == reflect.Slice && f.Type().Elem().Kind() == reflect.Uint8 {
+		if data == nil {
+			f.Set(reflect.Zero(f.Type()))
+			return true
+		}
+		f.SetBytes(data)
+		return true
+	}
+	return false
+}
+
+func derefSettable(v reflect.Value) (reflect.Value, bool) {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			if !v.CanSet() {
+				return v, false
+			}
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		v = v.Elem()
+	}
+	return v, v.CanSet()
+}
+
 func valueFromRow(kind schema.FieldKind, v codec.Value) interface{} {
 	switch kind {
 	case schema.KindBool:
@@ -244,18 +568,22 @@ func valueFromRow(kind schema.FieldKind, v codec.Value) interface{} {
 	case schema.KindString:
 		return v.Str
 	case schema.KindBytes:
-		if v.Bytes == nil {
-			return []byte(nil)
-		}
-		if v.Borrowed {
-			return v.Bytes
-		}
-		buf := make([]byte, len(v.Bytes))
-		copy(buf, v.Bytes)
-		return buf
+		return bytesForAssignment(v)
 	default:
 		return nil
 	}
+}
+
+func bytesForAssignment(v codec.Value) []byte {
+	if v.Bytes == nil {
+		return nil
+	}
+	if v.Borrowed {
+		return v.Bytes
+	}
+	buf := make([]byte, len(v.Bytes))
+	copy(buf, v.Bytes)
+	return buf
 }
 
 func assignInterface(field reflect.Value, value interface{}) error {

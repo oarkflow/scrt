@@ -32,13 +32,16 @@ type decodedPage struct {
 type decodedColumn struct {
 	kind          schema.FieldKind
 	uints         []uint64
-	stringDict    []string
+	stringOffsets []uint32
+	stringLens    []uint32
 	stringIndexes []uint32
 	stringArena   []byte
+	byteOffsets   []uint32
+	byteLens      []uint32
+	byteArena     []byte
 	bools         []bool
 	ints          []int64
 	floats        []float64
-	bytes         [][]byte
 }
 
 // NewReader constructs a streaming decoder bound to schema.
@@ -98,16 +101,24 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			row.values[fieldIdx].Set = true
 		case schema.KindString:
 			col := r.pageState.columns[fieldIdx]
-			if len(col.stringIndexes) > 0 {
-				dictIdx := col.stringIndexes[idx]
-				if int(dictIdx) >= len(col.stringDict) {
-					return false, fmt.Errorf("codec: string index out of range")
-				}
-				row.values[fieldIdx].Str = col.stringDict[dictIdx]
-			} else if len(col.stringDict) > idx {
-				row.values[fieldIdx].Str = col.stringDict[idx]
-			} else {
+			if idx >= len(col.stringIndexes) {
+				return false, fmt.Errorf("codec: string index missing")
+			}
+			dictIdx := col.stringIndexes[idx]
+			if int(dictIdx) >= len(col.stringOffsets) {
+				return false, fmt.Errorf("codec: string index out of range")
+			}
+			offset := col.stringOffsets[dictIdx]
+			length := col.stringLens[dictIdx]
+			if length == 0 {
 				row.values[fieldIdx].Str = ""
+			} else {
+				start := int(offset)
+				end := start + int(length)
+				if end > len(col.stringArena) {
+					return false, fmt.Errorf("codec: string slice out of bounds")
+				}
+				row.values[fieldIdx].Str = unsafe.String(&col.stringArena[start], int(length))
 			}
 			row.values[fieldIdx].Set = true
 		case schema.KindBool:
@@ -120,10 +131,20 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			row.values[fieldIdx].Float = r.pageState.columns[fieldIdx].floats[idx]
 			row.values[fieldIdx].Set = true
 		case schema.KindBytes:
-			row.values[fieldIdx].Bytes = r.pageState.columns[fieldIdx].bytes[idx]
-			row.values[fieldIdx].Borrowed = r.zeroCopyBytes
-			if !r.zeroCopyBytes {
-				row.values[fieldIdx].Bytes = cloneBytes(row.values[fieldIdx].Bytes)
+			col := r.pageState.columns[fieldIdx]
+			if len(col.byteOffsets) > idx {
+				offset := col.byteOffsets[idx]
+				length := col.byteLens[idx]
+				segment := col.byteArena[offset : offset+length]
+				if r.zeroCopyBytes {
+					row.values[fieldIdx].Bytes = segment
+					row.values[fieldIdx].Borrowed = true
+				} else {
+					row.values[fieldIdx].Bytes = cloneBytes(segment)
+					row.values[fieldIdx].Borrowed = false
+				}
+			} else {
+				row.values[fieldIdx].Bytes = nil
 				row.values[fieldIdx].Borrowed = false
 			}
 			row.values[fieldIdx].Set = true
@@ -133,6 +154,15 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 	}
 	r.pageState.cursor++
 	return true, nil
+}
+
+// RowsRemainingHint returns the number of buffered rows left in the current page.
+func (r *Reader) RowsRemainingHint() int {
+	remaining := r.pageState.rows - r.pageState.cursor
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func (r *Reader) consumeHeader() error {
@@ -214,131 +244,123 @@ func (r *Reader) decodePage(raw []byte) error {
 		}
 		payload := raw[:payloadLen]
 		raw = raw[payloadLen:]
-		col := decodedColumn{kind: kind}
+		col := &r.pageState.columns[int(fieldIdx)]
+		col.kind = kind
 		switch kind {
 		case schema.KindUint64, schema.KindRef:
-			values, err := decodeUintColumn(payload)
+			values, err := decodeUintColumn(payload, col.uints)
 			if err != nil {
 				return err
 			}
 			col.uints = values
 		case schema.KindString:
-			dict, indexes, arena, err := decodeStringColumn(payload)
+			offsets, lens, indexes, arena, err := decodeStringColumn(payload, col.stringOffsets, col.stringLens, col.stringIndexes)
 			if err != nil {
 				return err
 			}
-			col.stringDict = dict
+			col.stringOffsets = offsets
+			col.stringLens = lens
 			col.stringIndexes = indexes
 			col.stringArena = arena
 		case schema.KindBool:
-			values, err := decodeBoolColumn(payload)
+			values, err := decodeBoolColumn(payload, col.bools)
 			if err != nil {
 				return err
 			}
 			col.bools = values
 		case schema.KindInt64:
-			values, err := decodeIntColumn(payload)
+			values, err := decodeIntColumn(payload, col.ints)
 			if err != nil {
 				return err
 			}
 			col.ints = values
 		case schema.KindFloat64:
-			values, err := decodeFloatColumn(payload)
+			values, err := decodeFloatColumn(payload, col.floats)
 			if err != nil {
 				return err
 			}
 			col.floats = values
 		case schema.KindBytes:
-			values, err := decodeBytesColumn(payload, r.zeroCopyBytes)
+			offsets, lengths, arena, err := decodeBytesColumn(payload, col.byteOffsets, col.byteLens)
 			if err != nil {
 				return err
 			}
-			col.bytes = values
+			col.byteOffsets = offsets
+			col.byteLens = lengths
+			col.byteArena = arena
 		default:
 			return fmt.Errorf("codec: unsupported field kind %d", kind)
 		}
-		r.pageState.columns[int(fieldIdx)] = col
 	}
 
 	r.pageState.rows = int(rows)
 	return nil
 }
 
-func decodeUintColumn(data []byte) ([]uint64, error) {
+func decodeUintColumn(data []byte, dst []uint64) ([]uint64, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed uint column length")
 	}
 	data = data[n:]
-	values := make([]uint64, int(count))
+	dst = ensureUint64Slice(dst, int(count))
 	for i := 0; i < int(count); i++ {
 		v, consumed := binary.Uvarint(data)
 		if consumed <= 0 {
 			return nil, fmt.Errorf("codec: malformed uint value")
 		}
-		values[i] = v
+		dst[i] = v
 		data = data[consumed:]
 	}
-	return values, nil
+	return dst, nil
 }
 
-func decodeStringColumn(data []byte) ([]string, []uint32, []byte, error) {
+func decodeStringColumn(data []byte, offsets, lengths, indexes []uint32) ([]uint32, []uint32, []uint32, []byte, error) {
 	dictLen, n := binary.Uvarint(data)
 	if n <= 0 {
-		return nil, nil, nil, fmt.Errorf("codec: malformed dictionary length")
+		return nil, nil, nil, nil, fmt.Errorf("codec: malformed dictionary length")
 	}
 	data = data[n:]
-	offsets := make([]uint32, int(dictLen))
-	lengths := make([]uint32, int(dictLen))
-	var arena []byte
-	if dictLen > 0 {
-		arena = make([]byte, 0, len(data))
-	}
+	dictBytes := data
+	cursor := 0
+	offsets = ensureUint32Slice(offsets, int(dictLen))
+	lengths = ensureUint32Slice(lengths, int(dictLen))
 	for i := 0; i < int(dictLen); i++ {
-		strLen, consumed := binary.Uvarint(data)
+		length, consumed := binary.Uvarint(dictBytes[cursor:])
 		if consumed <= 0 {
-			return nil, nil, nil, fmt.Errorf("codec: malformed string length")
+			return nil, nil, nil, nil, fmt.Errorf("codec: malformed string length")
 		}
-		data = data[consumed:]
-		if len(data) < int(strLen) {
-			return nil, nil, nil, io.ErrUnexpectedEOF
+		cursor += consumed
+		if len(dictBytes) < cursor+int(length) {
+			return nil, nil, nil, nil, io.ErrUnexpectedEOF
 		}
-		offsets[i] = uint32(len(arena))
-		lengths[i] = uint32(strLen)
-		arena = append(arena, data[:strLen]...)
-		data = data[strLen:]
+		offsets[i] = uint32(cursor)
+		lengths[i] = uint32(length)
+		cursor += int(length)
 	}
-	dict := make([]string, int(dictLen))
-	for i := 0; i < int(dictLen); i++ {
-		length := lengths[i]
-		if length == 0 {
-			dict[i] = ""
-			continue
-		}
-		offset := offsets[i]
-		dict[i] = unsafe.String(&arena[offset], int(length))
-	}
+	arena := dictBytes[:cursor]
+	data = dictBytes[cursor:]
 	indexLen, consumed := binary.Uvarint(data)
 	if consumed <= 0 {
-		return nil, nil, nil, fmt.Errorf("codec: malformed index length")
+		return nil, nil, nil, nil, fmt.Errorf("codec: malformed index length")
 	}
 	data = data[consumed:]
-	indexes := make([]uint32, int(indexLen))
+	indexes = ensureUint32Slice(indexes, int(indexLen))
 	for i := 0; i < int(indexLen); i++ {
 		idx, used := binary.Uvarint(data)
 		if used <= 0 {
-			return nil, nil, nil, fmt.Errorf("codec: malformed string index")
+			return nil, nil, nil, nil, fmt.Errorf("codec: malformed string index")
 		}
 		data = data[used:]
 		if idx >= dictLen {
-			return nil, nil, nil, fmt.Errorf("codec: string index out of range")
+			return nil, nil, nil, nil, fmt.Errorf("codec: string index out of range")
 		}
 		indexes[i] = uint32(idx)
 	}
-	return dict, indexes, arena, nil
+	return offsets, lengths, indexes, arena, nil
 }
 
-func decodeBoolColumn(data []byte) ([]bool, error) {
+func decodeBoolColumn(data []byte, dst []bool) ([]bool, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed bool column length")
@@ -347,75 +369,73 @@ func decodeBoolColumn(data []byte) ([]bool, error) {
 	if len(data) < int(count) {
 		return nil, io.ErrUnexpectedEOF
 	}
-	values := make([]bool, int(count))
+	dst = ensureBoolSlice(dst, int(count))
 	for i := 0; i < int(count); i++ {
-		values[i] = data[i] != 0
+		dst[i] = data[i] != 0
 	}
-	return values, nil
+	return dst, nil
 }
 
-func decodeIntColumn(data []byte) ([]int64, error) {
+func decodeIntColumn(data []byte, dst []int64) ([]int64, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed int column length")
 	}
 	data = data[n:]
-	values := make([]int64, int(count))
+	dst = ensureInt64Slice(dst, int(count))
 	for i := 0; i < int(count); i++ {
 		v, consumed := binary.Varint(data)
 		if consumed <= 0 {
 			return nil, fmt.Errorf("codec: malformed int value")
 		}
-		values[i] = v
+		dst[i] = v
 		data = data[consumed:]
 	}
-	return values, nil
+	return dst, nil
 }
 
-func decodeFloatColumn(data []byte) ([]float64, error) {
+func decodeFloatColumn(data []byte, dst []float64) ([]float64, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed float column length")
 	}
 	data = data[n:]
-	values := make([]float64, int(count))
+	dst = ensureFloat64Slice(dst, int(count))
 	for i := 0; i < int(count); i++ {
 		if len(data) < 8 {
 			return nil, io.ErrUnexpectedEOF
 		}
 		bits := binary.LittleEndian.Uint64(data[:8])
-		values[i] = math.Float64frombits(bits)
+		dst[i] = math.Float64frombits(bits)
 		data = data[8:]
 	}
-	return values, nil
+	return dst, nil
 }
 
-func decodeBytesColumn(data []byte, zeroCopy bool) ([][]byte, error) {
+func decodeBytesColumn(data []byte, offsets, lengths []uint32) ([]uint32, []uint32, []byte, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
-		return nil, fmt.Errorf("codec: malformed bytes column length")
+		return nil, nil, nil, fmt.Errorf("codec: malformed bytes column length")
 	}
-	data = data[n:]
-	values := make([][]byte, int(count))
+	idx := n
+	payloadStart := idx
+	offsets = ensureUint32Slice(offsets, int(count))
+	lengths = ensureUint32Slice(lengths, int(count))
 	for i := 0; i < int(count); i++ {
-		length, consumed := binary.Uvarint(data)
+		length, consumed := binary.Uvarint(data[idx:])
 		if consumed <= 0 {
-			return nil, fmt.Errorf("codec: malformed bytes length")
+			return nil, nil, nil, fmt.Errorf("codec: malformed bytes length")
 		}
-		data = data[consumed:]
-		if len(data) < int(length) {
-			return nil, io.ErrUnexpectedEOF
+		idx += consumed
+		if len(data) < idx+int(length) {
+			return nil, nil, nil, io.ErrUnexpectedEOF
 		}
-		if zeroCopy {
-			values[i] = data[:length]
-		} else {
-			buf := make([]byte, int(length))
-			copy(buf, data[:length])
-			values[i] = buf
-		}
-		data = data[length:]
+		offsets[i] = uint32(idx - payloadStart)
+		lengths[i] = uint32(length)
+		idx += int(length)
 	}
-	return values, nil
+	arena := data[payloadStart:idx]
+	return offsets, lengths, arena, nil
 }
 
 func cloneBytes(src []byte) []byte {
@@ -425,4 +445,54 @@ func cloneBytes(src []byte) []byte {
 	buf := make([]byte, len(src))
 	copy(buf, src)
 	return buf
+}
+
+func ensureUint64Slice(buf []uint64, size int) []uint64 {
+	if size == 0 {
+		return buf[:0]
+	}
+	if cap(buf) < size {
+		return make([]uint64, size)
+	}
+	return buf[:size]
+}
+
+func ensureInt64Slice(buf []int64, size int) []int64 {
+	if size == 0 {
+		return buf[:0]
+	}
+	if cap(buf) < size {
+		return make([]int64, size)
+	}
+	return buf[:size]
+}
+
+func ensureFloat64Slice(buf []float64, size int) []float64 {
+	if size == 0 {
+		return buf[:0]
+	}
+	if cap(buf) < size {
+		return make([]float64, size)
+	}
+	return buf[:size]
+}
+
+func ensureBoolSlice(buf []bool, size int) []bool {
+	if size == 0 {
+		return buf[:0]
+	}
+	if cap(buf) < size {
+		return make([]bool, size)
+	}
+	return buf[:size]
+}
+
+func ensureUint32Slice(buf []uint32, size int) []uint32 {
+	if size == 0 {
+		return buf[:0]
+	}
+	if cap(buf) < size {
+		return make([]uint32, size)
+	}
+	return buf[:size]
 }

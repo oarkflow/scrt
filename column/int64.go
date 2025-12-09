@@ -7,8 +7,9 @@ type Int64Column struct {
 	values []int64
 }
 
-func NewInt64Column() *Int64Column {
-	return &Int64Column{values: make([]int64, 0, 256)}
+func NewInt64Column(capacity int) *Int64Column {
+	c := normalizeCapacityHint(capacity)
+	return &Int64Column{values: make([]int64, 0, c)}
 }
 
 func (c *Int64Column) Append(v int64) {
@@ -16,11 +17,10 @@ func (c *Int64Column) Append(v int64) {
 }
 
 func (c *Int64Column) Encode(dst *bytes.Buffer) {
-	buf := appendUvarint(nil, uint64(len(c.values)))
+	writeUvarint(dst, uint64(len(c.values)))
 	for _, v := range c.values {
-		buf = appendVarint(buf, v)
+		writeVarint(dst, v)
 	}
-	dst.Write(buf)
 }
 
 func (c *Int64Column) Reset() {

@@ -79,17 +79,17 @@ func newBuilderWithLimit(s *schema.Schema, rowLimit int) *Builder {
 		handle := columnHandle{kind: f.Kind}
 		switch f.Kind {
 		case schema.KindUint64, schema.KindRef:
-			handle.uints = column.NewUint64Column()
+			handle.uints = column.NewUint64Column(rowLimit)
 		case schema.KindString:
-			handle.strings = column.NewStringColumn()
+			handle.strings = column.NewStringColumn(rowLimit)
 		case schema.KindBool:
-			handle.bools = column.NewBoolColumn()
+			handle.bools = column.NewBoolColumn(rowLimit)
 		case schema.KindInt64:
-			handle.ints = column.NewInt64Column()
+			handle.ints = column.NewInt64Column(rowLimit)
 		case schema.KindFloat64:
-			handle.floats = column.NewFloat64Column()
+			handle.floats = column.NewFloat64Column(rowLimit)
 		case schema.KindBytes:
-			handle.bytes = column.NewBytesColumn()
+			handle.bytes = column.NewBytesColumn(rowLimit)
 		default:
 			panic("unsupported field kind")
 		}
@@ -196,9 +196,8 @@ func (b *Builder) Encode(dst *bytes.Buffer) {
 	if b.rows == 0 {
 		return
 	}
-	payload := appendUvarint(nil, uint64(b.rows))
-	payload = appendUvarint(payload, uint64(len(b.columns)))
-	dst.Write(payload)
+	writeUvarint(dst, uint64(b.rows))
+	writeUvarint(dst, uint64(len(b.columns)))
 
 	for idx, col := range b.columns {
 		b.columnBuf.Reset()
@@ -217,10 +216,9 @@ func (b *Builder) Encode(dst *bytes.Buffer) {
 			col.bytes.Encode(&b.columnBuf)
 		}
 		segment := b.columnBuf.Bytes()
-		header := appendUvarint(nil, uint64(idx))
-		header = append(header, byte(col.kind))
-		header = appendUvarint(header, uint64(len(segment)))
-		dst.Write(header)
+		writeUvarint(dst, uint64(idx))
+		dst.WriteByte(byte(col.kind))
+		writeUvarint(dst, uint64(len(segment)))
 		dst.Write(segment)
 	}
 }
