@@ -10,6 +10,32 @@ import (
 	"github.com/oarkflow/scrt/schema"
 )
 
+const nestedValueKey = "value"
+
+var nestedValueAliases = []string{
+	nestedValueKey,
+	"$value",
+	"$",
+	"Value",
+	"$data",
+	"data",
+	"Data",
+	"raw",
+	"Raw",
+}
+
+type signedInt interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64
+}
+
+type unsignedInt interface {
+	~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
+}
+
+type floatNumber interface {
+	~float32 | ~float64
+}
+
 var mapStringAnyType = reflect.TypeOf(map[string]any{})
 
 // MarshalOptions controls high-level marshal behavior.
@@ -154,6 +180,9 @@ func populateRowFromMap(row codec.Row, value reflect.Value, s *schema.Schema) er
 	if value.Type().Key().Kind() != reflect.String {
 		return fmt.Errorf("scrt: map key must be string, got %s", value.Type().Key())
 	}
+	if flattened, ok := flattenNestedMap(value); ok {
+		return populateRowFromMapAny(row, flattened, s)
+	}
 	switch data := value.Interface().(type) {
 	case map[string]any:
 		return populateRowFromMapAny(row, data, s)
@@ -161,14 +190,28 @@ func populateRowFromMap(row codec.Row, value reflect.Value, s *schema.Schema) er
 		return populateRowFromMapBool(row, data, s)
 	case map[string]int:
 		return populateRowFromMapInt(row, data, s)
+	case map[string]int8:
+		return populateRowFromMapInt8(row, data, s)
+	case map[string]int16:
+		return populateRowFromMapInt16(row, data, s)
+	case map[string]int32:
+		return populateRowFromMapInt32(row, data, s)
 	case map[string]int64:
 		return populateRowFromMapInt64(row, data, s)
 	case map[string]uint:
 		return populateRowFromMapUint(row, data, s)
+	case map[string]uint8:
+		return populateRowFromMapUint8(row, data, s)
+	case map[string]uint16:
+		return populateRowFromMapUint16(row, data, s)
+	case map[string]uint32:
+		return populateRowFromMapUint32(row, data, s)
 	case map[string]uint64:
 		return populateRowFromMapUint64(row, data, s)
 	case map[string]float64:
 		return populateRowFromMapFloat64(row, data, s)
+	case map[string]float32:
+		return populateRowFromMapFloat32(row, data, s)
 	case map[string]string:
 		return populateRowFromMapString(row, data, s)
 	case map[string][]byte:
@@ -222,6 +265,26 @@ func populateRowFromMapBool(row codec.Row, data map[string]bool, s *schema.Schem
 }
 
 func populateRowFromMapInt(row codec.Row, data map[string]int, s *schema.Schema) error {
+	return populateRowFromMapSigned(row, data, s)
+}
+
+func populateRowFromMapInt8(row codec.Row, data map[string]int8, s *schema.Schema) error {
+	return populateRowFromMapSigned(row, data, s)
+}
+
+func populateRowFromMapInt16(row codec.Row, data map[string]int16, s *schema.Schema) error {
+	return populateRowFromMapSigned(row, data, s)
+}
+
+func populateRowFromMapInt32(row codec.Row, data map[string]int32, s *schema.Schema) error {
+	return populateRowFromMapSigned(row, data, s)
+}
+
+func populateRowFromMapInt64(row codec.Row, data map[string]int64, s *schema.Schema) error {
+	return populateRowFromMapSigned(row, data, s)
+}
+
+func populateRowFromMapSigned[T signedInt](row codec.Row, data map[string]T, s *schema.Schema) error {
 	for idx, field := range s.Fields {
 		v, ok := data[field.Name]
 		if !ok {
@@ -238,24 +301,27 @@ func populateRowFromMapInt(row codec.Row, data map[string]int, s *schema.Schema)
 	return nil
 }
 
-func populateRowFromMapInt64(row codec.Row, data map[string]int64, s *schema.Schema) error {
-	for idx, field := range s.Fields {
-		v, ok := data[field.Name]
-		if !ok {
-			continue
-		}
-		if field.Kind != schema.KindInt64 {
-			return fmt.Errorf("scrt: field %s expects int64, got kind %d", field.Name, field.Kind)
-		}
-		var val codec.Value
-		val.Set = true
-		val.Int = v
-		row.SetByIndex(idx, val)
-	}
-	return nil
+func populateRowFromMapUint(row codec.Row, data map[string]uint, s *schema.Schema) error {
+	return populateRowFromMapUnsigned(row, data, s)
 }
 
-func populateRowFromMapUint(row codec.Row, data map[string]uint, s *schema.Schema) error {
+func populateRowFromMapUint8(row codec.Row, data map[string]uint8, s *schema.Schema) error {
+	return populateRowFromMapUnsigned(row, data, s)
+}
+
+func populateRowFromMapUint16(row codec.Row, data map[string]uint16, s *schema.Schema) error {
+	return populateRowFromMapUnsigned(row, data, s)
+}
+
+func populateRowFromMapUint32(row codec.Row, data map[string]uint32, s *schema.Schema) error {
+	return populateRowFromMapUnsigned(row, data, s)
+}
+
+func populateRowFromMapUint64(row codec.Row, data map[string]uint64, s *schema.Schema) error {
+	return populateRowFromMapUnsigned(row, data, s)
+}
+
+func populateRowFromMapUnsigned[T unsignedInt](row codec.Row, data map[string]T, s *schema.Schema) error {
 	for idx, field := range s.Fields {
 		v, ok := data[field.Name]
 		if !ok {
@@ -272,24 +338,15 @@ func populateRowFromMapUint(row codec.Row, data map[string]uint, s *schema.Schem
 	return nil
 }
 
-func populateRowFromMapUint64(row codec.Row, data map[string]uint64, s *schema.Schema) error {
-	for idx, field := range s.Fields {
-		v, ok := data[field.Name]
-		if !ok {
-			continue
-		}
-		if field.Kind != schema.KindUint64 && field.Kind != schema.KindRef {
-			return fmt.Errorf("scrt: field %s expects uint64/ref, got kind %d", field.Name, field.Kind)
-		}
-		var val codec.Value
-		val.Set = true
-		val.Uint = v
-		row.SetByIndex(idx, val)
-	}
-	return nil
+func populateRowFromMapFloat32(row codec.Row, data map[string]float32, s *schema.Schema) error {
+	return populateRowFromMapFloat(row, data, s)
 }
 
 func populateRowFromMapFloat64(row codec.Row, data map[string]float64, s *schema.Schema) error {
+	return populateRowFromMapFloat(row, data, s)
+}
+
+func populateRowFromMapFloat[T floatNumber](row codec.Row, data map[string]T, s *schema.Schema) error {
 	for idx, field := range s.Fields {
 		v, ok := data[field.Name]
 		if !ok {
@@ -300,7 +357,7 @@ func populateRowFromMapFloat64(row codec.Row, data map[string]float64, s *schema
 		}
 		var val codec.Value
 		val.Set = true
-		val.Float = v
+		val.Float = float64(v)
 		row.SetByIndex(idx, val)
 	}
 	return nil
@@ -348,6 +405,59 @@ func cloneBytes(src []byte) []byte {
 	dup := make([]byte, len(src))
 	copy(dup, src)
 	return dup
+}
+
+func flattenNestedMap(value reflect.Value) (map[string]any, bool) {
+	if value.Type().Elem().Kind() != reflect.Map {
+		return nil, false
+	}
+	if value.Type().Elem().Key().Kind() != reflect.String {
+		return nil, false
+	}
+	flattened := make(map[string]any, value.Len())
+	iter := value.MapRange()
+	for iter.Next() {
+		fieldName := iter.Key().String()
+		inner := indirect(iter.Value())
+		if inner.Kind() != reflect.Map || inner.Type().Key().Kind() != reflect.String {
+			continue
+		}
+		if actual, ok := nestedMapValue(inner, fieldName); ok {
+			flattened[fieldName] = actual.Interface()
+		}
+	}
+	if len(flattened) == 0 {
+		return nil, false
+	}
+	return flattened, true
+}
+
+func nestedMapValue(inner reflect.Value, fieldName string) (reflect.Value, bool) {
+	var fallback reflect.Value
+	aliasSet := make(map[string]struct{}, len(nestedValueAliases)+1)
+	for _, alias := range nestedValueAliases {
+		aliasSet[alias] = struct{}{}
+	}
+	aliasSet[fieldName] = struct{}{}
+	iter := inner.MapRange()
+	for iter.Next() {
+		keyVal := iter.Key()
+		if keyVal.Kind() != reflect.String {
+			continue
+		}
+		key := keyVal.String()
+		val := indirect(iter.Value())
+		if _, ok := aliasSet[key]; ok {
+			return val, true
+		}
+		if !fallback.IsValid() {
+			fallback = val
+		}
+	}
+	if fallback.IsValid() {
+		return fallback, true
+	}
+	return reflect.Value{}, false
 }
 
 func assignValueToRow(row codec.Row, idx int, kind schema.FieldKind, v reflect.Value) error {

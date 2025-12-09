@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SCRT Schema Client</title>
+    <link rel="stylesheet" href="/style.css" />
+</head>
+
+<body>
+    <header>
+        <h1>SCRT Schema Client</h1>
+        <p class="subtitle">Shared Go/TypeScript schema cache demo</p>
+    </header>
+    <main>
+        <section>
+            <label for="server">Server URL</label>
+            <input id="server" type="text" value="http://localhost:8080" />
+            <button id="load">Load Messages</button>
+        </section>
+        <section>
+            <pre id="status">Idle</pre>
+            <ul id="messages"></ul>
+        </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

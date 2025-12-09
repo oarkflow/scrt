@@ -449,50 +449,83 @@ func cloneBytes(src []byte) []byte {
 
 func ensureUint64Slice(buf []uint64, size int) []uint64 {
 	if size == 0 {
+		if buf == nil {
+			return nil
+		}
 		return buf[:0]
 	}
 	if cap(buf) < size {
-		return make([]uint64, size)
+		newCap := growCapacity(cap(buf), size)
+		buf = make([]uint64, newCap)
 	}
 	return buf[:size]
 }
 
 func ensureInt64Slice(buf []int64, size int) []int64 {
 	if size == 0 {
+		if buf == nil {
+			return nil
+		}
 		return buf[:0]
 	}
 	if cap(buf) < size {
-		return make([]int64, size)
+		newCap := growCapacity(cap(buf), size)
+		buf = make([]int64, newCap)
 	}
 	return buf[:size]
 }
 
 func ensureFloat64Slice(buf []float64, size int) []float64 {
 	if size == 0 {
+		if buf == nil {
+			return nil
+		}
 		return buf[:0]
 	}
 	if cap(buf) < size {
-		return make([]float64, size)
+		newCap := growCapacity(cap(buf), size)
+		buf = make([]float64, newCap)
 	}
 	return buf[:size]
 }
 
 func ensureBoolSlice(buf []bool, size int) []bool {
 	if size == 0 {
+		if buf == nil {
+			return nil
+		}
 		return buf[:0]
 	}
 	if cap(buf) < size {
-		return make([]bool, size)
+		newCap := growCapacity(cap(buf), size)
+		buf = make([]bool, newCap)
 	}
 	return buf[:size]
 }
 
 func ensureUint32Slice(buf []uint32, size int) []uint32 {
 	if size == 0 {
+		if buf == nil {
+			return nil
+		}
 		return buf[:0]
 	}
 	if cap(buf) < size {
-		return make([]uint32, size)
+		newCap := growCapacity(cap(buf), size)
+		buf = make([]uint32, newCap)
 	}
 	return buf[:size]
+}
+
+func growCapacity(current, needed int) int {
+	if current == 0 {
+		current = 1
+	}
+	for current < needed {
+		if current >= math.MaxInt/2 {
+			return needed
+		}
+		current *= 2
+	}
+	return current
 }

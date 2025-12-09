@@ -1,0 +1,19 @@
+{
+    "name": "scrt",
+    "version": "0.1.0",
+    "description": "SCRT schema cache tooling and TypeScript client examples",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc -b && vite build",
+        "preview": "vite preview",
+        "check": "tsc -b"
+    },
+    "dependencies": { },
+    "devDependencies": {
+        "@types/node": "^22.7.1",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.4.5",
+        "vite": "^5.4.8"
+    }
+}

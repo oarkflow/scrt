@@ -16,6 +16,7 @@ type Cache struct {
 
 type cachedDoc struct {
 	doc     *Document
+	raw     []byte
 	modTime time.Time
 }
 
@@ -55,7 +56,7 @@ func (c *Cache) LoadFile(path string) (*Document, error) {
 	parsed.Source = path
 
 	c.mu.Lock()
-	c.docs[path] = &cachedDoc{doc: parsed, modTime: info.ModTime()}
+	c.docs[path] = &cachedDoc{doc: parsed, raw: append([]byte(nil), data...), modTime: info.ModTime()}
 	for name, sch := range parsed.Schemas {
 		c.schemas[name] = sch
 	}
@@ -70,4 +71,21 @@ func (c *Cache) Schema(name string) (*Schema, bool) {
 	defer c.mu.RUnlock()
 	sch, ok := c.schemas[name]
 	return sch, ok
+}
+
+// Snapshot ensures schemaPath is loaded and returns the parsed document,
+// original DSL bytes, and last modification time in a single call.
+func (c *Cache) Snapshot(path string) (*Document, []byte, time.Time, error) {
+	doc, err := c.LoadFile(path)
+	if err != nil {
+		return nil, nil, time.Time{}, err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.docs[path]
+	if !ok {
+		return nil, nil, time.Time{}, os.ErrNotExist
+	}
+	raw := append([]byte(nil), entry.raw...)
+	return doc, raw, entry.modTime, nil
 }

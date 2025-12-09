@@ -107,3 +107,58 @@ The cache is concurrency-safe and supports hot reload by comparing fingerprint +
 2. Layer on SIMD-backed column codecs for even higher throughput.
 3. Implement streaming readers for partial column fetches.
 4. Benchmark against protobuf/flatbuffers for space and CPU comparisons.
+
+## Frontend Demo
+
+The repository now includes a Vite-powered UI that reuses the same TypeScript helpers:
+
+```bash
+# install deps once
+npm install
+
+# run the Go schema server for data + schema endpoints
+GOEXPERIMENT=arenas go run ./examples/schema_server -schema data.scrt -addr :8080
+
+# in another terminal start the Vite client (defaults to localhost:8080)
+VITE_SCRT_SERVER=http://localhost:8080 npm run dev
+```
+
+The client is located under `src/` and pulls schemas via `SchemaHttpClient`, fetches
+`/api/messages`, and renders the decoded rows in the browser.
+
+## Shared Schema Gateway
+
+The `schema.HTTPService` exposes cached schema documents over HTTP so TypeScript
+clients can reuse the exact same DSL without shipping duplicate copies.
+
+```sh
+go run ./examples/schema_server -schema ./data.scrt -addr :8080
+```
+
+This starts a tiny server with two routes:
+
+- `GET /schemas/index` – JSON metadata (name, fingerprint, field count).
+- `GET /schemas/doc` – raw `.scrt` DSL with `X-SCRT-Fingerprint` header.
+
+On the client side, use the `SchemaHttpClient` helper to stay in sync:
+
+```ts
+import { SchemaHttpClient } from "./ts/apiClient";
+
+const client = new SchemaHttpClient("http://localhost:8080");
+const messageSchema = await client.schema("Message");
+const payload = await client.marshal("Message", [
+  { MsgID: 1, User: 42, Text: "hey", Lang: "en" },
+]);
+
+// Later, hydrate rows back into structs using the shared schema cache
+const decoded = await client.unmarshal("Message", payload, () => ({
+  MsgID: 0,
+  User: 0,
+  Text: "",
+  Lang: "",
+}));
+```
+
+Both sides rely on the same `.scrt` file, fingerprints, and field order,
+ensuring marshaling/unmarshaling stays deterministic across Go and TypeScript.
