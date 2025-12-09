@@ -1,34 +1,56 @@
 package column
 
-import "bytes"
+import (
+	"bytes"
+	"math"
+)
 
-// BytesColumn encodes byte slices with length prefixes.
+// BytesColumn encodes byte slices with length prefixes using a contiguous arena.
 type BytesColumn struct {
-	values [][]byte
+	offsets []uint32
+	lengths []uint32
+	arena   []byte
 }
 
 func NewBytesColumn() *BytesColumn {
-	return &BytesColumn{values: make([][]byte, 0, 256)}
+	return &BytesColumn{
+		offsets: make([]uint32, 0, 256),
+		lengths: make([]uint32, 0, 256),
+		arena:   make([]byte, 0, 4096),
+	}
 }
 
 func (c *BytesColumn) Append(v []byte) {
-	buf := make([]byte, len(v))
-	copy(buf, v)
-	c.values = append(c.values, buf)
+	if len(v) == 0 {
+		c.offsets = append(c.offsets, uint32(len(c.arena)))
+		c.lengths = append(c.lengths, 0)
+		return
+	}
+	if len(v) > math.MaxUint32 {
+		panic("bytes column value exceeds 4GB")
+	}
+	if len(c.arena)+len(v) > math.MaxUint32 {
+		panic("bytes column arena exceeds 4GB")
+	}
+	c.offsets = append(c.offsets, uint32(len(c.arena)))
+	c.lengths = append(c.lengths, uint32(len(v)))
+	c.arena = append(c.arena, v...)
 }
 
 func (c *BytesColumn) Encode(dst *bytes.Buffer) {
-	buf := appendUvarint(nil, uint64(len(c.values)))
-	for _, v := range c.values {
-		buf = appendUvarint(buf, uint64(len(v)))
-		buf = append(buf, v...)
+	buf := appendUvarint(nil, uint64(len(c.offsets)))
+	for i := range c.offsets {
+		length := c.lengths[i]
+		buf = appendUvarint(buf, uint64(length))
+		start := c.offsets[i]
+		end := start + length
+		buf = append(buf, c.arena[start:end]...)
 	}
 	dst.Write(buf)
 }
 
 func (c *BytesColumn) Reset() {
-	for i := range c.values {
-		c.values[i] = nil
-	}
-	c.values = c.values[:0]
+	c.offsets = c.offsets[:0]
+	c.lengths = c.lengths[:0]
+	c.arena = c.arena[:0]
 }

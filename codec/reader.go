@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"unsafe"
 
 	"github.com/oarkflow/scrt/schema"
 )
@@ -16,8 +17,9 @@ type Reader struct {
 	src    *bufio.Reader
 	schema *schema.Schema
 
-	headerRead bool
-	pageState  decodedPage
+	headerRead    bool
+	pageState     decodedPage
+	zeroCopyBytes bool
 }
 
 type decodedPage struct {
@@ -28,20 +30,37 @@ type decodedPage struct {
 }
 
 type decodedColumn struct {
-	kind    schema.FieldKind
-	uints   []uint64
-	strings []string
-	bools   []bool
-	ints    []int64
-	floats  []float64
-	bytes   [][]byte
+	kind          schema.FieldKind
+	uints         []uint64
+	stringDict    []string
+	stringIndexes []uint32
+	stringArena   []byte
+	bools         []bool
+	ints          []int64
+	floats        []float64
+	bytes         [][]byte
+}
+
+// NewReader constructs a streaming decoder bound to schema.
+// Options controls reader behavior.
+type Options struct {
+	// ZeroCopyBytes, when true, returns byte slices backed by the page buffer.
+	// Callers must treat returned byte slices as read-only and they remain valid
+	// only until the next page is loaded or the reader is reused.
+	ZeroCopyBytes bool
 }
 
 // NewReader constructs a streaming decoder bound to schema.
 func NewReader(src io.Reader, s *schema.Schema) *Reader {
+	return NewReaderWithOptions(src, s, Options{})
+}
+
+// NewReaderWithOptions constructs a decoder with custom options.
+func NewReaderWithOptions(src io.Reader, s *schema.Schema, opts Options) *Reader {
 	return &Reader{
-		src:    bufio.NewReader(src),
-		schema: s,
+		src:           bufio.NewReader(src),
+		schema:        s,
+		zeroCopyBytes: opts.ZeroCopyBytes,
 		pageState: decodedPage{
 			columns: make([]decodedColumn, len(s.Fields)),
 		},
@@ -78,7 +97,18 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			row.values[fieldIdx].Str = ""
 			row.values[fieldIdx].Set = true
 		case schema.KindString:
-			row.values[fieldIdx].Str = r.pageState.columns[fieldIdx].strings[idx]
+			col := r.pageState.columns[fieldIdx]
+			if len(col.stringIndexes) > 0 {
+				dictIdx := col.stringIndexes[idx]
+				if int(dictIdx) >= len(col.stringDict) {
+					return false, fmt.Errorf("codec: string index out of range")
+				}
+				row.values[fieldIdx].Str = col.stringDict[dictIdx]
+			} else if len(col.stringDict) > idx {
+				row.values[fieldIdx].Str = col.stringDict[idx]
+			} else {
+				row.values[fieldIdx].Str = ""
+			}
 			row.values[fieldIdx].Set = true
 		case schema.KindBool:
 			row.values[fieldIdx].Bool = r.pageState.columns[fieldIdx].bools[idx]
@@ -90,7 +120,12 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			row.values[fieldIdx].Float = r.pageState.columns[fieldIdx].floats[idx]
 			row.values[fieldIdx].Set = true
 		case schema.KindBytes:
-			row.values[fieldIdx].Bytes = cloneBytes(r.pageState.columns[fieldIdx].bytes[idx])
+			row.values[fieldIdx].Bytes = r.pageState.columns[fieldIdx].bytes[idx]
+			row.values[fieldIdx].Borrowed = r.zeroCopyBytes
+			if !r.zeroCopyBytes {
+				row.values[fieldIdx].Bytes = cloneBytes(row.values[fieldIdx].Bytes)
+				row.values[fieldIdx].Borrowed = false
+			}
 			row.values[fieldIdx].Set = true
 		default:
 			return false, ErrUnknownField
@@ -188,11 +223,13 @@ func (r *Reader) decodePage(raw []byte) error {
 			}
 			col.uints = values
 		case schema.KindString:
-			values, err := decodeStringColumn(payload)
+			dict, indexes, arena, err := decodeStringColumn(payload)
 			if err != nil {
 				return err
 			}
-			col.strings = values
+			col.stringDict = dict
+			col.stringIndexes = indexes
+			col.stringArena = arena
 		case schema.KindBool:
 			values, err := decodeBoolColumn(payload)
 			if err != nil {
@@ -212,7 +249,7 @@ func (r *Reader) decodePage(raw []byte) error {
 			}
 			col.floats = values
 		case schema.KindBytes:
-			values, err := decodeBytesColumn(payload)
+			values, err := decodeBytesColumn(payload, r.zeroCopyBytes)
 			if err != nil {
 				return err
 			}
@@ -245,43 +282,60 @@ func decodeUintColumn(data []byte) ([]uint64, error) {
 	return values, nil
 }
 
-func decodeStringColumn(data []byte) ([]string, error) {
+func decodeStringColumn(data []byte) ([]string, []uint32, []byte, error) {
 	dictLen, n := binary.Uvarint(data)
 	if n <= 0 {
-		return nil, fmt.Errorf("codec: malformed dictionary length")
+		return nil, nil, nil, fmt.Errorf("codec: malformed dictionary length")
 	}
 	data = data[n:]
-	dictionary := make([]string, int(dictLen))
+	offsets := make([]uint32, int(dictLen))
+	lengths := make([]uint32, int(dictLen))
+	var arena []byte
+	if dictLen > 0 {
+		arena = make([]byte, 0, len(data))
+	}
 	for i := 0; i < int(dictLen); i++ {
 		strLen, consumed := binary.Uvarint(data)
 		if consumed <= 0 {
-			return nil, fmt.Errorf("codec: malformed string length")
+			return nil, nil, nil, fmt.Errorf("codec: malformed string length")
 		}
 		data = data[consumed:]
 		if len(data) < int(strLen) {
-			return nil, io.ErrUnexpectedEOF
+			return nil, nil, nil, io.ErrUnexpectedEOF
 		}
-		dictionary[i] = string(data[:strLen])
+		offsets[i] = uint32(len(arena))
+		lengths[i] = uint32(strLen)
+		arena = append(arena, data[:strLen]...)
 		data = data[strLen:]
+	}
+	dict := make([]string, int(dictLen))
+	for i := 0; i < int(dictLen); i++ {
+		length := lengths[i]
+		if length == 0 {
+			dict[i] = ""
+			continue
+		}
+		offset := offsets[i]
+		dict[i] = unsafe.String(&arena[offset], int(length))
 	}
 	indexLen, consumed := binary.Uvarint(data)
 	if consumed <= 0 {
-		return nil, fmt.Errorf("codec: malformed index length")
+		return nil, nil, nil, fmt.Errorf("codec: malformed index length")
 	}
 	data = data[consumed:]
-	values := make([]string, int(indexLen))
+	indexes := make([]uint32, int(indexLen))
 	for i := 0; i < int(indexLen); i++ {
 		idx, used := binary.Uvarint(data)
 		if used <= 0 {
-			return nil, fmt.Errorf("codec: malformed string index")
+			return nil, nil, nil, fmt.Errorf("codec: malformed string index")
 		}
 		data = data[used:]
-		if int(idx) >= len(dictionary) {
-			return nil, fmt.Errorf("codec: string index out of range")
+		if idx >= dictLen {
+			return nil, nil, nil, fmt.Errorf("codec: string index out of range")
 		}
-		values[i] = dictionary[int(idx)]
+		indexes[i] = uint32(idx)
 	}
-	return values, nil
+	return dict, indexes, arena, nil
 }
 
 func decodeBoolColumn(data []byte) ([]bool, error) {
@@ -336,7 +390,7 @@ func decodeFloatColumn(data []byte) ([]float64, error) {
 	return values, nil
 }
 
-func decodeBytesColumn(data []byte) ([][]byte, error) {
+func decodeBytesColumn(data []byte, zeroCopy bool) ([][]byte, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed bytes column length")
@@ -352,9 +406,13 @@ func decodeBytesColumn(data []byte) ([][]byte, error) {
 		if len(data) < int(length) {
 			return nil, io.ErrUnexpectedEOF
 		}
-		buf := make([]byte, int(length))
-		copy(buf, data[:length])
-		values[i] = buf
+		if zeroCopy {
+			values[i] = data[:length]
+		} else {
+			buf := make([]byte, int(length))
+			copy(buf, data[:length])
+			values[i] = buf
+		}
 		data = data[length:]
 	}
 	return values, nil

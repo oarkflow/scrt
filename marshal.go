@@ -67,17 +67,18 @@ func MarshalFiles(schemaPath, schemaName, dataPath string, input any, opts ...Ma
 
 func encodeInto(dst *bytes.Buffer, s *schema.Schema, input any, cfg MarshalOptions) error {
 	writer := codec.NewWriter(dst, s, cfg.RowsPerPage)
-	row := codec.NewRow(s)
+	row := codec.AcquireRow(s)
+	defer codec.ReleaseRow(row)
 	err := visitRecords(input, func(v reflect.Value) error {
 		v = indirect(v)
 		if !v.IsValid() {
 			return fmt.Errorf("scrt: nil record")
 		}
 		row.Reset()
-		if err := populateRow(row, v, s); err != nil {
+		if err := populateRow(*row, v, s); err != nil {
 			return err
 		}
-		return writer.WriteRow(row)
+		return writer.WriteRow(*row)
 	})
 	if err != nil {
 		return err
@@ -127,14 +128,17 @@ func populateRow(row codec.Row, value reflect.Value, s *schema.Schema) error {
 }
 
 func populateRowFromStruct(row codec.Row, value reflect.Value, s *schema.Schema) error {
-	desc := describeStruct(value.Type())
-	for idx, field := range s.Fields {
-		fv, ok := desc.lookup(value, field.Name)
-		if !ok || !fv.IsValid() {
+	bindings := structBindingsForSchema(value.Type(), s)
+	for idx, binding := range bindings {
+		if len(binding.index) == 0 {
 			continue
 		}
-		if err := assignValueToRow(row, idx, field.Kind, fv); err != nil {
-			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
+		fv := value.FieldByIndex(binding.index)
+		if !fv.IsValid() {
+			continue
+		}
+		if err := assignValueToRow(row, idx, s.Fields[idx].Kind, fv); err != nil {
+			return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
 		}
 	}
 	return nil

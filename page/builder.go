@@ -2,6 +2,7 @@ package page
 
 import (
 	"bytes"
+	"sync"
 
 	"github.com/oarkflow/scrt/column"
 	"github.com/oarkflow/scrt/schema"
@@ -29,9 +30,50 @@ type columnHandle struct {
 
 // NewBuilder creates a builder with the provided row capacity.
 func NewBuilder(s *schema.Schema, rowLimit int) *Builder {
-	if rowLimit <= 0 {
-		rowLimit = 1024
+	return newBuilderWithLimit(s, normalizeRowLimit(rowLimit))
+}
+
+// AcquireBuilder returns a reusable builder for the schema and rowLimit.
+func AcquireBuilder(s *schema.Schema, rowLimit int) *Builder {
+	limit := normalizeRowLimit(rowLimit)
+	key := builderPoolKey{schema: s, rowsPerPage: limit}
+	poolIface, _ := builderPools.LoadOrStore(key, &sync.Pool{
+		New: func() any {
+			return newBuilderWithLimit(s, limit)
+		},
+	})
+	b := poolIface.(*sync.Pool).Get().(*Builder)
+	b.Reset()
+	return b
+}
+
+// ReleaseBuilder returns a builder back to the pool after resetting it.
+func ReleaseBuilder(b *Builder) {
+	if b == nil || b.schema == nil {
+		return
 	}
+	key := builderPoolKey{schema: b.schema, rowsPerPage: b.rowLimit}
+	if poolIface, ok := builderPools.Load(key); ok {
+		b.Reset()
+		poolIface.(*sync.Pool).Put(b)
+	}
+}
+
+type builderPoolKey struct {
+	schema      *schema.Schema
+	rowsPerPage int
+}
+
+var builderPools sync.Map
+
+func normalizeRowLimit(rowLimit int) int {
+	if rowLimit <= 0 {
+		return 1024
+	}
+	return rowLimit
+}
+
+func newBuilderWithLimit(s *schema.Schema, rowLimit int) *Builder {
 	cols := make([]columnHandle, len(s.Fields))
 	for i, f := range s.Fields {
 		handle := columnHandle{kind: f.Kind}

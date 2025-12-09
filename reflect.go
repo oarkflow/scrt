@@ -6,12 +6,20 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+
+	"github.com/oarkflow/scrt/schema"
 )
 
 var (
-	structCache  sync.Map
-	stringerType = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
+	structCache        sync.Map
+	structBindingCache sync.Map
+	stringerType       = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
 )
+
+type structBindingKey struct {
+	typeKey   reflect.Type
+	schemaKey *schema.Schema
+}
 
 type structDescriptor struct {
 	fields map[string]structField
@@ -55,6 +63,27 @@ func (d *structDescriptor) lookup(v reflect.Value, field string) (reflect.Value,
 		return reflect.Value{}, false
 	}
 	return v.FieldByIndex(def.index), true
+}
+
+func structBindingsForSchema(t reflect.Type, s *schema.Schema) []structField {
+	if t == nil || s == nil {
+		return nil
+	}
+	key := structBindingKey{typeKey: t, schemaKey: s}
+	if cached, ok := structBindingCache.Load(key); ok {
+		return cached.([]structField)
+	}
+	desc := describeStruct(t)
+	bindings := make([]structField, len(s.Fields))
+	if desc != nil {
+		for idx, field := range s.Fields {
+			if sf, ok := desc.fields[field.Name]; ok {
+				bindings[idx] = sf
+			}
+		}
+	}
+	structBindingCache.Store(key, bindings)
+	return bindings
 }
 
 func indirect(v reflect.Value) reflect.Value {

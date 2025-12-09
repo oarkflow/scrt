@@ -28,7 +28,7 @@ func NewWriter(dst io.Writer, s *schema.Schema, rowsPerPage int) *Writer {
 	return &Writer{
 		dst:     dst,
 		schema:  s,
-		builder: page.NewBuilder(s, rowsPerPage),
+		builder: page.AcquireBuilder(s, rowsPerPage),
 	}
 }
 
@@ -85,10 +85,12 @@ func (w *Writer) Flush() error {
 
 // Close flushes remaining data.
 func (w *Writer) Close() error {
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	return nil
+	err := w.Flush()
+	page.ReleaseBuilder(w.builder)
+	w.builder = nil
+	w.headerWritten = false
+	w.scratch.Reset()
+	return err
 }
 
 func (w *Writer) ensureHeader() error {

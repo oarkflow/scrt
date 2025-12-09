@@ -1,0 +1,50 @@
+@schema:Message
+@field MsgID uint64 serial
+@field User ref:User:ID
+@field Text string
+@field Lang string
+
+@schema:User
+@field ID uint64 serial
+@field Name string
+@field Email string
+
+@Message
+1, @ref:User:ID=1001, "Hello World!", "en"
+2, @ref:User:ID=1002, "Shipping docs ready for review", "en"
+3, @ref:User:ID=1003, "Saludos equipo reunion a las 3", "es"
+4, @ref:User:ID=1004, "Shin release checklist confirmed", "ja"
+5, @ref:User:ID=1005, "Build queue cleared successfully", "en"
+6, @ref:User:ID=1006, "Tallennettu raportti on jaettu", "fi"
+7, @ref:User:ID=1007, "Reminder security review tomorrow", "en"
+8, @ref:User:ID=1008, "Aggiornamento spedizione completato", "it"
+9, @ref:User:ID=1009, "Neue Designfreigabe liegt vor", "de"
+10, @ref:User:ID=1010, "Equipe de dados sincronizada", "pt"
+11, @ref:User:ID=1011, "Jikai demo shiryo, o kyoyu shimashita", "ja"
+12, @ref:User:ID=1012, "Quarterly briefing slides uploaded", "en"
+13, @ref:User:ID=1001, "Escalated ticket 4821 closed", "en"
+14, @ref:User:ID=1002, "Nayi grahak report tayar hai", "hi"
+15, @ref:User:ID=1003, "Inventario actualizado en el almacen norte", "es"
+16, @ref:User:ID=1004, "Localization assets merged", "en"
+17, @ref:User:ID=1005, "QA suite encontro 0 regresiones", "es"
+18, @ref:User:ID=1006, "Planned maintenance starts at 0200 UTC", "en"
+19, @ref:User:ID=1007, "Client success metrics trending up", "en"
+20, @ref:User:ID=1008, "Pipeline ottimizzata per i build notturni", "it"
+21, @ref:User:ID=1009, "Onboarding batch sieben abgeschlossen", "de"
+22, @ref:User:ID=1010, "Equipe confirmou presenca no hackathon", "pt"
+23, @ref:User:ID=1011, "Data model no minaoshi o jisshi chuu desu", "ja"
+24, @ref:User:ID=1012, "Regional status board refreshed", "en"
+
+@User
+1001, "John Doe", "john.doe@example.com"
+1002, "Jane Smith", "jane.smith@example.com"
+1003, "Carlos Alvarez", "c.alvarez@example.com"
+1004, "Mei Lin", "mei.lin@example.com"
+1005, "Priya Natarajan", "priya.n@example.com"
+1006, "Lars Jensen", "lars.j@example.com"
+1007, "Amina Khan", "amina.khan@example.com"
+1008, "Luca Bianchi", "lbianchi@example.com"
+1009, "Sophia Muller", "sophia.m@example.com"
+1010, "Diego Costa", "diego.c@example.com"
+1011, "Hana Suzuki", "hana.s@example.com"
+1012, "Omar Farouk", "omar.f@example.com"

@@ -22,7 +22,7 @@ type Message struct {
 
 func main() {
 	// Parse the schema file
-	doc, err := schema.ParseFile("../../data.scrt")
+	doc, err := schema.ParseFile("data.scrt")
 	if err != nil {
 		log.Fatalf("failed to parse schema: %v", err)
 	}

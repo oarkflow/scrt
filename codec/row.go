@@ -1,16 +1,21 @@
 package codec
 
-import "github.com/oarkflow/scrt/schema"
+import (
+	"sync"
+
+	"github.com/oarkflow/scrt/schema"
+)
 
 // Value holds the typed payload for a schema field.
 type Value struct {
-	Uint  uint64
-	Int   int64
-	Float float64
-	Str   string
-	Bytes []byte
-	Bool  bool
-	Set   bool
+	Uint     uint64
+	Int      int64
+	Float    float64
+	Str      string
+	Bytes    []byte
+	Bool     bool
+	Set      bool
+	Borrowed bool
 }
 
 // Row is a reusable, schema-aware container for field values.
@@ -23,6 +28,34 @@ type Row struct {
 func NewRow(s *schema.Schema) Row {
 	return Row{schema: s, values: make([]Value, len(s.Fields))}
 }
+
+// AcquireRow reuses a row for the given schema to minimize allocations.
+func AcquireRow(s *schema.Schema) *Row {
+	poolIface, _ := rowPools.LoadOrStore(s, &sync.Pool{
+		New: func() any {
+			return &Row{schema: s, values: make([]Value, len(s.Fields))}
+		},
+	})
+	r := poolIface.(*sync.Pool).Get().(*Row)
+	if len(r.values) != len(s.Fields) {
+		r.values = make([]Value, len(s.Fields))
+	}
+	r.Reset()
+	return r
+}
+
+// ReleaseRow returns a row back to the pool for reuse.
+func ReleaseRow(r *Row) {
+	if r == nil || r.schema == nil {
+		return
+	}
+	if poolIface, ok := rowPools.Load(r.schema); ok {
+		r.Reset()
+		poolIface.(*sync.Pool).Put(r)
+	}
+}
+
+var rowPools sync.Map
 
 // Reset clears string references to aid GC.
 func (r Row) Reset() {
