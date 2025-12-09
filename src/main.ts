@@ -1,11 +1,15 @@
 import { SchemaHttpClient, DocumentSummary } from "../ts/apiClient";
+import { Schema, marshalRows, parseSCRT } from "../ts/scrt";
 
 type GenericRecord = Record<string, unknown>;
+
+const utf8Decoder = new TextDecoder();
 
 interface UIElements {
     serverInput: HTMLInputElement;
     documentSelect: HTMLSelectElement;
     schemaSelect: HTMLSelectElement;
+    schemaPreview: HTMLElement;
     loadButton: HTMLButtonElement;
     refreshButton: HTMLButtonElement;
     status: HTMLElement;
@@ -16,7 +20,8 @@ interface UIElements {
     recordForm: HTMLFormElement;
     recordDocumentInput: HTMLInputElement;
     recordSchemaInput: HTMLInputElement;
-    recordBodyInput: HTMLTextAreaElement;
+    recordTextInput: HTMLTextAreaElement;
+    recordFileInput: HTMLInputElement;
 }
 
 interface UIState {
@@ -24,6 +29,7 @@ interface UIState {
     baseUrl: string;
     defaultDocument?: string;
     documents: DocumentSummary[];
+    schemaIndex: Map<string, string[]>;
 }
 
 const elements = queryElements();
@@ -34,7 +40,11 @@ const state: UIState = {
     baseUrl: initialBase,
     defaultDocument: undefined,
     documents: [],
+    schemaIndex: new Map<string, string[]>(),
 };
+let schemaPreviewTicket = 0;
+
+renderSchemaPreviewMessage("Select a document and schema to inspect field layout.");
 
 attachEventListeners();
 void refreshDocuments();
@@ -43,6 +53,7 @@ function queryElements(): UIElements {
     const serverInput = mustQuery<HTMLInputElement>("#server");
     const documentSelect = mustQuery<HTMLSelectElement>("#document-select");
     const schemaSelect = mustQuery<HTMLSelectElement>("#schema-select");
+    const schemaPreview = mustQuery<HTMLElement>("#schema-preview");
     const loadButton = mustQuery<HTMLButtonElement>("#load-records");
     const refreshButton = mustQuery<HTMLButtonElement>("#refresh-docs");
     const status = mustQuery<HTMLElement>("#status");
@@ -53,11 +64,13 @@ function queryElements(): UIElements {
     const recordForm = mustQuery<HTMLFormElement>("#record-form");
     const recordDocumentInput = mustQuery<HTMLInputElement>("#record-document");
     const recordSchemaInput = mustQuery<HTMLInputElement>("#record-schema");
-    const recordBodyInput = mustQuery<HTMLTextAreaElement>("#record-body");
+    const recordTextInput = mustQuery<HTMLTextAreaElement>("#record-text");
+    const recordFileInput = mustQuery<HTMLInputElement>("#record-file");
     return {
         serverInput,
         documentSelect,
         schemaSelect,
+        schemaPreview,
         loadButton,
         refreshButton,
         status,
@@ -68,7 +81,8 @@ function queryElements(): UIElements {
         recordForm,
         recordDocumentInput,
         recordSchemaInput,
-        recordBodyInput,
+        recordTextInput,
+        recordFileInput,
     };
 }
 
@@ -96,10 +110,24 @@ function attachEventListeners(): void {
     });
     elements.schemaSelect.addEventListener("change", () => {
         elements.recordSchemaInput.value = elements.schemaSelect.value;
+        void renderSelectedSchemaPreview();
     });
     elements.documentForm.addEventListener("submit", (event) => {
         event.preventDefault();
         void handleDocumentSubmit();
+    });
+    elements.recordTextInput.addEventListener("input", () => {
+        void maybeApplySchemaHint(elements.recordTextInput.value);
+    });
+    elements.recordFileInput.addEventListener("change", () => {
+        const file = elements.recordFileInput.files?.[0];
+        if (!file || !isTextScrtFile(file)) {
+            return;
+        }
+        void file
+            .text()
+            .then((text) => maybeApplySchemaHint(text))
+            .catch(() => undefined);
     });
     elements.recordForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -111,6 +139,7 @@ async function refreshDocuments(): Promise<void> {
     const baseUrl = normalizeBaseUrl(elements.serverInput.value);
     state.baseUrl = baseUrl;
     state.client = new SchemaHttpClient({ baseUrl, defaultDocument: state.defaultDocument });
+    state.schemaIndex.clear();
     setStatus("Loading documents…");
     try {
         const docs = await state.client.listDocuments();
@@ -133,18 +162,18 @@ async function refreshDocuments(): Promise<void> {
     }
 }
 
-async function populateSchemas(documentName: string): Promise<void> {
+async function populateSchemas(documentName: string, preferred?: string): Promise<void> {
     if (!documentName) {
         clearSchemaOptions("Select a schema");
         return;
     }
     try {
-        const doc = await state.client.ensureDocument(false, documentName);
-        const names = Array.from(doc.schemas.keys()).sort();
+        const names = await getSchemasForDocument(documentName);
         setSchemaOptions(names);
-        const next = names[0] ?? "";
-        elements.schemaSelect.value = next;
-        elements.recordSchemaInput.value = next;
+        const target = chooseSchema(names, preferred);
+        elements.schemaSelect.value = target;
+        elements.recordSchemaInput.value = target;
+        void renderSelectedSchemaPreview();
     } catch (err) {
         clearSchemaOptions((err as Error).message);
     }
@@ -159,12 +188,17 @@ async function loadRecords(): Promise<void> {
     }
     setStatus(`Fetching ${documentName}/${schemaName}…`);
     try {
-        const records = await state.client.fetchRecords<GenericRecord>(
-            schemaName,
-            () => ({} as GenericRecord),
-            { document: documentName },
-        );
-        renderRecords(records, schemaName);
+        const [schema, records] = await Promise.all([
+            state.client.schema(schemaName, documentName),
+            state.client.fetchRecords<GenericRecord>(
+                schemaName,
+                () => ({} as GenericRecord),
+                { document: documentName },
+            ),
+        ]);
+        renderRecords(records, schema);
+        schemaPreviewTicket += 1;
+        renderSchemaPreview(schema, documentName);
         setStatus(`Loaded ${records.length} record(s) from ${documentName}/${schemaName}`);
     } catch (err) {
         setStatus((err as Error).message);
@@ -194,26 +228,84 @@ async function handleDocumentSubmit(): Promise<void> {
 }
 
 async function handleRecordSubmit(): Promise<void> {
-    const documentName = elements.recordDocumentInput.value.trim() || elements.documentSelect.value;
-    const schemaName = elements.recordSchemaInput.value.trim() || elements.schemaSelect.value;
-    const body = elements.recordBodyInput.value.trim();
-    if (!documentName || !schemaName || !body) {
-        setStatus("Document, schema, and JSON rows are required.");
+    const inlineText = elements.recordTextInput.value.trim();
+    const file = elements.recordFileInput.files?.[0];
+    let textPayload = inlineText;
+    if (!textPayload && file && isTextScrtFile(file)) {
+        try {
+            textPayload = (await file.text()).trim();
+        } catch {
+            textPayload = "";
+        }
+    }
+
+    if (!textPayload && !file) {
+        setStatus("Provide SCRT rows or upload a payload file.");
         return;
     }
-    let rows: GenericRecord[];
-    try {
-        const parsed = JSON.parse(body);
-        rows = Array.isArray(parsed) ? parsed : [parsed];
-    } catch (err) {
-        setStatus(`Invalid JSON: ${(err as Error).message}`);
+
+    const schemaHints = textPayload ? detectSchemaHints(textPayload) : [];
+    const hintedSchema = schemaHints[0];
+    if (schemaHints.length > 1 && !elements.recordSchemaInput.value.trim()) {
+        setStatus(`Multiple schema scopes detected (${schemaHints.join(", ")}). Select a schema to continue.`);
         return;
     }
-    setStatus(`Uploading ${rows.length} record(s) to ${documentName}/${schemaName}…`);
+
+    if (hintedSchema && !elements.recordSchemaInput.value.trim()) {
+        syncSchemaSelection(hintedSchema);
+        await ensureDocumentSelectionForSchema(hintedSchema);
+    }
+
+    let schemaName =
+        elements.recordSchemaInput.value.trim() ||
+        elements.schemaSelect.value ||
+        hintedSchema ||
+        "";
+    if (!schemaName) {
+        setStatus("Schema is required. Add an @Schema scope or pick one from the list.");
+        return;
+    }
+
+    let documentName = elements.recordDocumentInput.value.trim() || elements.documentSelect.value;
+    if (!documentName) {
+        documentName = await ensureDocumentSelectionForSchema(schemaName);
+    } else {
+        await ensureDocumentSelectionForSchema(schemaName);
+    }
+    if (!documentName) {
+        setStatus(`Schema ${schemaName} was not found in any loaded document.`);
+        return;
+    }
+
+    let payload: Uint8Array | undefined;
+    if (textPayload) {
+        try {
+            const rows = await parseRowsFromScrt(documentName, schemaName, textPayload);
+            payload = await state.client.marshal(schemaName, rows, { document: documentName });
+        } catch (err) {
+            if (!file) {
+                setStatus(`SCRT parse error: ${(err as Error).message}`);
+                return;
+            }
+        }
+    }
+    if (!payload && file) {
+        payload = new Uint8Array(await file.arrayBuffer());
+    }
+    if (!payload) {
+        setStatus("Unable to build an SCRT payload. Check the inputs and try again.");
+        return;
+    }
+
+    setStatus(`Uploading SCRT payload to ${documentName}/${schemaName}…`);
     try {
-        const payload = await state.client.marshal(schemaName, rows, { document: documentName });
         await state.client.pushRecords(documentName, schemaName, payload);
-        setStatus(`Stored ${rows.length} record(s) for ${documentName}/${schemaName}.`);
+        setStatus(`Stored SCRT payload for ${documentName}/${schemaName}.`);
+        elements.recordForm.reset();
+        elements.recordDocumentInput.value = documentName;
+        elements.recordSchemaInput.value = schemaName;
+        elements.recordTextInput.value = "";
+        elements.recordFileInput.value = "";
         await loadRecords();
     } catch (err) {
         setStatus((err as Error).message);
@@ -257,9 +349,11 @@ function clearSchemaOptions(label: string): void {
     option.disabled = true;
     elements.schemaSelect.add(option);
     elements.recordSchemaInput.value = "";
+    schemaPreviewTicket += 1;
+    renderSchemaPreviewMessage(label);
 }
 
-function renderRecords(records: GenericRecord[], schemaName: string): void {
+function renderRecords(records: GenericRecord[], schema: Schema): void {
     if (!records.length) {
         elements.recordList.replaceChildren();
         return;
@@ -267,13 +361,92 @@ function renderRecords(records: GenericRecord[], schemaName: string): void {
     const nodes = records.map((record, index) => {
         const li = document.createElement("li");
         const header = document.createElement("header");
-        header.innerHTML = `<strong>${schemaName}</strong> · row ${index + 1}`;
+        header.innerHTML = `<strong>@${schema.name}</strong> · row ${index + 1}`;
         const pre = document.createElement("pre");
-        pre.textContent = JSON.stringify(record, null, 2);
+        pre.textContent = utf8Decoder.decode(marshalRows(schema, [record], { includeSchema: false })).trim();
         li.append(header, pre);
         return li;
     });
     elements.recordList.replaceChildren(...nodes);
+}
+
+async function renderSelectedSchemaPreview(): Promise<void> {
+    const documentName = elements.documentSelect.value;
+    const schemaName = elements.schemaSelect.value;
+    if (!documentName || !schemaName) {
+        schemaPreviewTicket += 1;
+        renderSchemaPreviewMessage("Select a document and schema to inspect field layout.");
+        return;
+    }
+    const ticket = ++schemaPreviewTicket;
+    renderSchemaPreviewMessage(`Loading ${documentName}/${schemaName}…`);
+    try {
+        const schema = await state.client.schema(schemaName, documentName);
+        if (ticket !== schemaPreviewTicket) {
+            return;
+        }
+        renderSchemaPreview(schema, documentName);
+    } catch (err) {
+        if (ticket !== schemaPreviewTicket) {
+            return;
+        }
+        renderSchemaPreviewMessage((err as Error).message, true);
+    }
+}
+
+function renderSchemaPreview(schema?: Schema, documentName?: string): void {
+    if (!schema) {
+        renderSchemaPreviewMessage("Schema layout unavailable.", true);
+        return;
+    }
+    const qualified = documentName ? `${documentName} / @${schema.name}` : `@${schema.name}`;
+    if (!schema.fields.length) {
+        renderSchemaPreviewMessage(`${qualified} has no fields defined.`);
+        return;
+    }
+    const rows = schema.fields
+        .map((field, index) => {
+            const meta = formatFieldMeta(field);
+            const order = String(index + 1).padStart(2, "0");
+            return `<li class="schema-field"><span class="field-order">${order}</span><div><div class="field-name">${field.name}</div><div class="field-meta">${meta}</div></div></li>`;
+        })
+        .join("\n");
+    elements.schemaPreview.innerHTML = `
+        <div class="schema-preview-header">
+            <span>${qualified}</span>
+            <span>${schema.fields.length} field${schema.fields.length === 1 ? "" : "s"}</span>
+        </div>
+        <ul class="schema-preview-list">
+            ${rows}
+        </ul>
+    `;
+}
+
+function renderSchemaPreviewMessage(message: string, isError = false): void {
+    const cls = isError ? "schema-preview-message error" : "schema-preview-message";
+    elements.schemaPreview.innerHTML = `<div class="${cls}">${message}</div>`;
+}
+
+function formatFieldMeta(field: Schema["fields"][number]): string {
+    const parts = [field.rawType];
+    const extras: string[] = [];
+    if (field.autoIncrement && !field.attributes?.includes("serial")) {
+        extras.push("auto");
+    }
+    for (const attr of field.attributes ?? []) {
+        if (!attr) {
+            continue;
+        }
+        if (attr === "serial" && field.autoIncrement) {
+            continue;
+        }
+        extras.push(attr);
+    }
+    if (field.targetSchema) {
+        const targetField = field.targetField ? `.${field.targetField}` : "";
+        extras.push(`ref→${field.targetSchema}${targetField}`);
+    }
+    return [...parts, ...extras].filter(Boolean).join(" • ");
 }
 
 function setStatus(message: string): void {
@@ -282,4 +455,164 @@ function setStatus(message: string): void {
 
 function normalizeBaseUrl(value: string): string {
     return value.trim() || window.location.origin;
+}
+
+async function parseRowsFromScrt(documentName: string, schemaName: string, body: string): Promise<GenericRecord[]> {
+    const doc = await state.client.ensureDocument(false, documentName);
+    const schema = doc.schema(schemaName);
+    if (!schema) {
+        throw new Error(`Schema ${schemaName} not found in document ${documentName}.`);
+    }
+    const snippet = composeDocumentForRows(schema, body);
+    const parsed = parseSCRT(snippet, `${documentName}:${schemaName}`);
+    const rows = parsed.records(schema.name);
+    if (!rows.length) {
+        throw new Error(`No SCRT rows found for ${schemaName}.`);
+    }
+    return rows as GenericRecord[];
+}
+
+function composeDocumentForRows(schema: Schema, body: string): string {
+    const sanitized = sanitizeScrtBody(body);
+    if (!sanitized) {
+        throw new Error("SCRT rows are empty.");
+    }
+    if (/^@schema\b/im.test(sanitized)) {
+        return sanitized;
+    }
+    const section = ensureSchemaSection(schema.name, sanitized);
+    return `${buildSchemaDefinition(schema)}\n\n${section}`;
+}
+
+function buildSchemaDefinition(schema: Schema): string {
+    const lines = [`@schema:${schema.name}`];
+    for (const field of schema.fields) {
+        let line = `@field ${field.name} ${field.rawType}`;
+        if (field.attributes?.length) {
+            line += ` ${field.attributes.join(" ")}`;
+        }
+        lines.push(line.trim());
+    }
+    return lines.join("\n");
+}
+
+function ensureSchemaSection(schemaName: string, body: string): string {
+    const sectionPattern = /^[ \t]*@(?!schema\b)[A-Za-z0-9_:-]+\s*$/im;
+    if (sectionPattern.test(body)) {
+        return body;
+    }
+    return `@${schemaName}\n${body}`;
+}
+
+function sanitizeScrtBody(input: string): string {
+    return input
+        .split(/\r?\n/)
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trim();
+}
+
+function detectSchemaHints(text: string): string[] {
+    const matches = new Set<string>();
+    const pattern = /^[ \t]*@(?!schema\b)([A-Za-z0-9_:-]+)\s*$/gm;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+        matches.add(match[1]);
+    }
+    return Array.from(matches);
+}
+
+async function maybeApplySchemaHint(input: string): Promise<void> {
+    const hint = detectSchemaHints(input)[0];
+    if (!hint) {
+        return;
+    }
+    syncSchemaSelection(hint);
+    await ensureDocumentSelectionForSchema(hint);
+}
+
+async function ensureDocumentSelectionForSchema(schemaName: string): Promise<string | undefined> {
+    if (!schemaName) {
+        return undefined;
+    }
+    const currentDoc = elements.documentSelect.value;
+    if (currentDoc) {
+        try {
+            const schemas = await getSchemasForDocument(currentDoc);
+            if (schemas.includes(schemaName)) {
+                elements.recordDocumentInput.value = currentDoc;
+                return currentDoc;
+            }
+        } catch {
+            // ignore and continue
+        }
+    }
+    for (const summary of state.documents) {
+        try {
+            const schemas = await getSchemasForDocument(summary.name);
+            if (schemas.includes(schemaName)) {
+                await setActiveDocument(summary.name, schemaName);
+                return summary.name;
+            }
+        } catch {
+            continue;
+        }
+    }
+    return undefined;
+}
+
+async function setActiveDocument(docName: string, preferredSchema?: string): Promise<void> {
+    if (elements.documentSelect.value !== docName) {
+        elements.documentSelect.value = docName;
+    }
+    elements.recordDocumentInput.value = docName;
+    state.defaultDocument = docName;
+    state.client.useDocument(docName);
+    await populateSchemas(docName, preferredSchema);
+}
+
+async function getSchemasForDocument(documentName: string): Promise<string[]> {
+    const cached = state.schemaIndex.get(documentName);
+    if (cached) {
+        return cached;
+    }
+    const doc = await state.client.ensureDocument(false, documentName);
+    const names = Array.from(doc.schemas.keys()).sort();
+    state.schemaIndex.set(documentName, names);
+    return names;
+}
+
+function chooseSchema(names: string[], preferred?: string): string {
+    const desired = preferred?.trim();
+    if (desired && names.includes(desired)) {
+        return desired;
+    }
+    const manual = elements.recordSchemaInput.value.trim();
+    if (manual && names.includes(manual)) {
+        return manual;
+    }
+    const current = elements.schemaSelect.value;
+    if (current && names.includes(current)) {
+        return current;
+    }
+    return names[0] ?? "";
+}
+
+function syncSchemaSelection(schemaName: string): void {
+    if (!schemaName) {
+        return;
+    }
+    elements.recordSchemaInput.value = schemaName;
+    elements.schemaSelect.value = schemaName;
+}
+
+function isTextScrtFile(file?: File): boolean {
+    if (!file) {
+        return false;
+    }
+    if (!file.type || file.type === "application/octet-stream") {
+        const lower = file.name.toLowerCase();
+        return lower.endsWith(".scrt") || lower.endsWith(".txt");
+    }
+    return file.type.startsWith("text/");
 }

@@ -33,6 +33,9 @@
                 <button id="refresh-docs" type="button">Refresh Documents</button>
                 <button id="load-records" type="button">Load Records</button>
             </div>
+            <div id="schema-preview" class="schema-preview">
+                <div class="schema-preview-message">Select a document and schema to inspect field layout.</div>
+            </div>
         </section>
 
         <section class="panel">
@@ -60,8 +63,13 @@
                     <input id="record-document" type="text" placeholder="message" />
                     <label for="record-schema">Schema</label>
                     <input id="record-schema" type="text" placeholder="Message" />
-                    <label for="record-body">Rows (JSON array)</label>
-                    <textarea id="record-body" placeholder='[{ "MsgID": 999, "User": 42, "Text": "hi" }]'></textarea>
+                    <label for="record-text">SCRT Rows</label>
+                    <textarea id="record-text" placeholder='@User&#10;1, "first", "last"'></textarea>
+                    <p class="hint">Paste raw SCRT rows. Leave blank to rely on the payload file.</p>
+                    <label for="record-file">Upload SCRT Payload</label>
+                    <input id="record-file" type="file" accept=".scrt,.txt,application/x-scrt,text/plain" />
+                    <p class="hint">Upload `.scrt` text or binary payloads. Scopes like @User auto-select the target
+                        schema.</p>
                     <div class="actions">
                         <button type="submit">Upload Records</button>
                     </div>
