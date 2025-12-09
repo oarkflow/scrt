@@ -131,14 +131,17 @@ The repository now includes a Vite-powered UI that reuses the same TypeScript he
 npm install
 
 # run the Go schema server for data + schema endpoints
-GOEXPERIMENT=arenas go run ./examples/schema_server -schema data.scrt -addr :8080
+GOEXPERIMENT=arenas go run ./examples/schema_server \
+  -schema message=data.scrt \
+  -schema user=/path/to/user.scrt \
+  -addr :8080 -base-path /schemas
 
 # in another terminal start the Vite client (defaults to localhost:8080)
 VITE_SCRT_SERVER=http://localhost:8080 npm run dev
 ```
 
 The client is located under `src/` and pulls schema + payload data from
-`/schemas/bundle?schema=Message`. That endpoint now emits a compact binary
+`/schemas/bundle?document=message&schema=Message`. That endpoint now emits a compact binary
 envelope (magic `SCB1`, version byte, document fingerprint, unix-nano timestamp,
 u32-length schema DSL, u16-count index entries, optional payload section). No JSON
 parsing is required on either side, and the TypeScript helper reconstructs the
@@ -150,33 +153,54 @@ The `schema.HTTPService` exposes cached schema documents over HTTP so TypeScript
 clients can reuse the exact same DSL without shipping duplicate copies.
 
 ```sh
-go run ./examples/schema_server -schema ./data.scrt -addr :8080
+go run ./examples/schema_server \
+  -schema message=data.scrt \
+  -schema another=/path/to/another.scrt \
+  -addr :8080 -base-path /schemas
 ```
 
-This starts a tiny server with bundle + schema routes:
+This starts a tiny server with multi-document CRUD endpoints:
 
-- `GET /schemas/bundle` – emits `application/x-scrt-bundle`, a binary layout consisting of magic/version headers, fingerprint, unix-nano timestamp, the raw `.scrt` DSL (u32 length + bytes), the schema index entries, and (optionally) a payload block containing the raw SCRT binary rows. No base64 or JSON is used.
-- `GET /schemas/index` – JSON metadata (name, fingerprint, field count).
-- `GET /schemas/doc` – raw `.scrt` DSL with `X-SCRT-Fingerprint` header.
+- `GET /schemas/documents` – enumerate every loaded SCRT document.
+- `POST /schemas/documents?name={doc}` – upload/replace a `.scrt` document (request body is raw DSL text).
+- `GET /schemas/documents/{doc}` – download the DSL text for a specific document.
+- `POST /schemas/documents/{doc}/records/{schema}` – attach binary SCRT rows for a schema.
+- `GET /schemas/documents/{doc}/records/{schema}` – fetch the stored rows.
+- `GET /schemas/bundle?document={doc}&schema={Schema}` – emit the binary bundle described above (schema text + metadata + optional payload) in a single round-trip.
+- `GET /schemas/index?document={doc}` / `GET /schemas/doc?document={doc}` – debugging helpers for the DSL/index view.
 
 On the client side, use the `SchemaHttpClient` helper to stay in sync:
 
 ```ts
 import { SchemaHttpClient } from "./ts/apiClient";
 
-const client = new SchemaHttpClient("http://localhost:8080");
+const client = new SchemaHttpClient({
+  baseUrl: "http://localhost:8080",
+  defaultDocument: "message",
+  // paths are customizable if your routes live elsewhere
+  // paths: {
+  //   bundle: "/api/scrt/bundle",
+  //   documents: "/api/scrt/docs",
+  //   documentRecords: (doc, schema) => `/api/scrt/docs/${doc}/records/${schema}`,
+  // },
+});
 const decoded = await client.fetchRecords("Message", () => ({
   MsgID: 0,
   User: 0,
   Text: "",
   Lang: "",
-}));
+}), { document: "message" });
 
 // marshal/unmarshal helpers are still available when you have local data
-const messageSchema = await client.schema("Message");
+const messageSchema = await client.schema("Message", "message");
 const payload = await client.marshal("Message", [
   { MsgID: 1, User: 42, Text: "hey", Lang: "en" },
 ]);
+
+// Document management helpers
+await client.upsertDocument("inventory", scrtDslString); // raw `.scrt` text
+const docs = await client.listDocuments(); // [{ name: "message", ... }, ...]
+await client.pushRecords("inventory", "Stock", binaryPayload); // binary SCRT rows
 ```
 
 Both sides rely on the same `.scrt` file, fingerprints, and field order,

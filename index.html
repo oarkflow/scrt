@@ -14,14 +14,59 @@
         <p class="subtitle">Shared Go/TypeScript schema cache demo</p>
     </header>
     <main>
-        <section>
-            <label for="server">Server URL</label>
-            <input id="server" type="text" value="http://localhost:8080" />
-            <button id="load">Load Messages</button>
+        <section class="panel">
+            <div class="field">
+                <label for="server">Server URL</label>
+                <input id="server" type="text" value="http://localhost:8080" />
+            </div>
+            <div class="grid-2">
+                <div>
+                    <label for="document-select">Document</label>
+                    <select id="document-select"></select>
+                </div>
+                <div>
+                    <label for="schema-select">Schema</label>
+                    <select id="schema-select"></select>
+                </div>
+            </div>
+            <div class="actions">
+                <button id="refresh-docs" type="button">Refresh Documents</button>
+                <button id="load-records" type="button">Load Records</button>
+            </div>
         </section>
-        <section>
+
+        <section class="panel">
             <pre id="status">Idle</pre>
-            <ul id="messages"></ul>
+            <ul id="records"></ul>
+        </section>
+
+        <section class="panel crud">
+            <div>
+                <h2>Document CRUD</h2>
+                <form id="document-form">
+                    <label for="document-name">Document Name</label>
+                    <input id="document-name" type="text" placeholder="inventory" />
+                    <label for="document-body">SCRT Document</label>
+                    <textarea id="document-body" placeholder="@schema:Example&#10;@field ID uint64 serial"></textarea>
+                    <div class="actions">
+                        <button type="submit">Save Document</button>
+                    </div>
+                </form>
+            </div>
+            <div>
+                <h2>Record CRUD</h2>
+                <form id="record-form">
+                    <label for="record-document">Document</label>
+                    <input id="record-document" type="text" placeholder="message" />
+                    <label for="record-schema">Schema</label>
+                    <input id="record-schema" type="text" placeholder="Message" />
+                    <label for="record-body">Rows (JSON array)</label>
+                    <textarea id="record-body" placeholder='[{ "MsgID": 999, "User": 42, "Text": "hi" }]'></textarea>
+                    <div class="actions">
+                        <button type="submit">Upload Records</button>
+                    </div>
+                </form>
+            </div>
         </section>
     </main>
     <script type="module" src="/src/main.ts"></script>

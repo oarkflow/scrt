@@ -7,14 +7,25 @@ the same cached SCRT schema while exchanging real payloads.
 
 ```bash
 cd /Users/sujit/Sites/scrt
-GOEXPERIMENT=arenas go run ./examples/schema_server -schema data.scrt -addr :8080
+GOEXPERIMENT=arenas go run ./examples/schema_server \
+	-schema message=data.scrt \
+	-schema user=/path/to/user.scrt \
+	-addr :8080 -base-path /schemas
+
+Each `-schema` flag accepts either `name=path` or just the file path (the name
+defaults to the filename without extension). Add as many as you need: `user.scrt`,
+`message.scrt`, and any other domain-specific documents.
 ```
 
-The server exposes:
+Key endpoints (all under the configurable `-base-path`, default `/schemas`):
 
-- `GET /schemas/bundle` – schema text + metadata, optionally including binary SCRT payloads when `?schema=Name` is supplied.
-- `GET /schemas/index` – JSON index of schemas + fingerprints (used mainly for debugging).
-- `GET /schemas/doc` – raw `.scrt` schema file (cached server-side, still available for tooling).
+- `GET /schemas/documents` – list every loaded SCRT document with fingerprint + metadata.
+- `POST /schemas/documents?name={doc}` – upload/replace a schema by streaming raw `.scrt` DSL (body is the text file, no JSON required).
+- `GET /schemas/documents/{doc}` – download the DSL text for an existing document.
+- `POST /schemas/documents/{doc}/records/{schema}` – attach binary SCRT rows to a schema (body is the binary payload produced by `scrt.Marshal`).
+- `GET /schemas/documents/{doc}/records/{schema}` – read the last stored payload for that schema/doc pair.
+- `GET /schemas/bundle?document={doc}&schema={Schema}` – compact binary response (see below) that streams the DSL + optional payload in one hop.
+- `GET /schemas/index?document={doc}` / `GET /schemas/doc?document={doc}` – debugging helpers for a specific document.
 
 `/schemas/bundle` now speaks a binary envelope so no JSON ever crosses the wire. The layout is:
 
@@ -37,18 +48,19 @@ Use Node 18+ (for built-in `fetch`). Any TS runner works; the example below uses
 
 ```bash
 cd /Users/sujit/Sites/scrt
-SCRT_SERVER=http://localhost:8080 npx ts-node examples/schema_server/client.ts
+SCRT_SERVER=http://localhost:8080 SCRT_DOCUMENT=message \
+	npx ts-node examples/schema_server/client.ts
 ```
 
 The script will:
 
-1. Request `/schemas/bundle?schema=Message` which returns the schema text plus the binary SCRT payload in one round-trip.
+1. Request `/schemas/bundle?document=message&schema=Message` which returns the schema text plus the binary SCRT payload in one round-trip.
 2. Parse the schema via `SchemaHttpClient` and decode the bundled payload with the shared metadata.
 
 You should see output similar to:
 
 ```
-Decoded 3 messages
+Decoded 3 messages from document "message"
 #1 [user=1001] (en) Hello World!
 #2 [user=1002] (es) Hola Mundo!
 #3 [user=1003] (fr) Bonjour Monde!

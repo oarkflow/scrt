@@ -19,24 +19,88 @@ export interface SchemaBundlePayload {
     data: Uint8Array;
 }
 
+export interface DocumentSummary {
+    name: string;
+    fingerprint: string;
+    schemaCount: number;
+    updatedAt: string;
+    source: string;
+}
+
+export interface MarshalRequestOptions extends MarshalOptions {
+    document?: string;
+}
+
+export interface UnmarshalRequestOptions {
+    document?: string;
+}
+
+interface SchemaHttpClientPaths {
+    bundle: string;
+    documents: string;
+    documentRecords(document: string, schema: string): string;
+}
+
+const defaultPaths: SchemaHttpClientPaths = {
+    bundle: "/schemas/bundle",
+    documents: "/schemas/documents",
+    documentRecords: (document, schema) =>
+        `/schemas/documents/${encodeURIComponent(document)}/records/${encodeURIComponent(schema)}`,
+};
+
+export interface SchemaHttpClientOptions {
+    baseUrl?: string;
+    defaultDocument?: string;
+    paths?: Partial<SchemaHttpClientPaths>;
+}
+
 const bundleMagic = "SCB1";
 const textDecoder = new TextDecoder();
 
 export class SchemaHttpClient {
-    private cachedDoc?: Document;
+    private readonly baseUrl: string;
+    private readonly paths: SchemaHttpClientPaths;
+    private cachedDocs = new Map<string, Document>();
+    private defaultDocument?: string;
 
-    constructor(private readonly baseUrl = "") { }
+    constructor(options: SchemaHttpClientOptions = {}) {
+        this.baseUrl = options.baseUrl ?? "";
+        this.defaultDocument = options.defaultDocument;
+        this.paths = {
+            bundle: options.paths?.bundle ?? defaultPaths.bundle,
+            documents: options.paths?.documents ?? defaultPaths.documents,
+            documentRecords: options.paths?.documentRecords ?? defaultPaths.documentRecords,
+        };
+    }
 
-    async ensureDocument(force = false): Promise<Document> {
-        if (!force && this.cachedDoc) {
-            return this.cachedDoc;
+    async ensureDocument(force = false, documentName?: string): Promise<Document> {
+        const target = documentName ?? this.defaultDocument;
+        const key = this.documentCacheKey(target);
+        if (!force) {
+            const cached = this.cachedDocs.get(key);
+            if (cached) {
+                return cached;
+            }
         }
-        const bundle = await this.fetchBundle();
+        const bundle = await this.fetchBundle(undefined, target);
+        this.cachedDocs.set(key, bundle.document);
         return bundle.document;
     }
 
-    async schema(name: string): Promise<Schema> {
-        const doc = await this.ensureDocument();
+    useDocument(name: string | undefined): void {
+        this.defaultDocument = name;
+    }
+
+    clearCache(documentName?: string): void {
+        if (documentName) {
+            this.cachedDocs.delete(this.documentCacheKey(documentName));
+            return;
+        }
+        this.cachedDocs.clear();
+    }
+
+    async schema(name: string, documentName?: string): Promise<Schema> {
+        const doc = await this.ensureDocument(false, documentName);
         const schema = doc.schema(name);
         if (!schema) {
             throw new Error(`schema ${name} not found`);
@@ -44,22 +108,25 @@ export class SchemaHttpClient {
         return schema;
     }
 
-    async marshal<T>(schemaName: string, records: Iterable<T>, opts?: MarshalOptions): Promise<Uint8Array> {
-        const schema = await this.schema(schemaName);
-        return marshal(schema, records, opts);
+    async marshal<T>(schemaName: string, records: Iterable<T>, opts?: MarshalRequestOptions): Promise<Uint8Array> {
+        const documentOverride = opts?.document;
+        const { document: _doc, ...marshalOpts } = opts ?? {};
+        const schema = await this.schema(schemaName, documentOverride);
+        return marshal(schema, records, marshalOpts as MarshalOptions);
     }
 
     async unmarshal<T>(
         schemaName: string,
         payload: string | Buffer | ArrayBuffer | Uint8Array,
         factory: () => T,
+        opts: UnmarshalRequestOptions = {},
     ): Promise<T[]> {
-        const schema = await this.schema(schemaName);
+        const schema = await this.schema(schemaName, opts.document);
         return unmarshal(payload, schema, factory);
     }
 
-    async fetchRecords<T>(schemaName: string, factory: () => T): Promise<T[]> {
-        const bundle = await this.fetchBundle(schemaName);
+    async fetchRecords<T>(schemaName: string, factory: () => T, opts: { document?: string } = {}): Promise<T[]> {
+        const bundle = await this.fetchBundle(schemaName, opts.document ?? this.defaultDocument);
         const targetSchema = bundle.document.schema(schemaName);
         if (!targetSchema) {
             throw new Error(`schema ${schemaName} not found in bundle`);
@@ -70,28 +137,79 @@ export class SchemaHttpClient {
         return unmarshal(bundle.payload.data, targetSchema, factory);
     }
 
-    private async fetchBundle(schemaName?: string): Promise<{
+    async listDocuments(): Promise<DocumentSummary[]> {
+        const doFetch = this.requireFetch();
+        const response = await doFetch(this.resolve(this.paths.documents), {
+            headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+            throw new Error(`list documents failed: ${response.status}`);
+        }
+        const payload = await response.json();
+        return (payload?.documents as DocumentSummary[]) ?? [];
+    }
+
+    async upsertDocument(name: string, source: string | Uint8Array | ArrayBuffer): Promise<void> {
+        const doFetch = this.requireFetch();
+        const params = new URLSearchParams({ name });
+        const endpoint = appendQuery(this.resolve(this.paths.documents), params);
+        const response = await doFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+            body: toRequestBody(source),
+        });
+        if (!response.ok) {
+            throw new Error(`upsert document failed: ${response.status}`);
+        }
+        this.clearCache(name);
+    }
+
+    async pushRecords(documentName: string, schemaName: string, payload: Uint8Array): Promise<void> {
+        const doFetch = this.requireFetch();
+        const endpoint = this.resolve(this.paths.documentRecords(documentName, schemaName));
+        const response = await doFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-scrt" },
+            body: payload,
+        });
+        if (!response.ok) {
+            throw new Error(`push records failed: ${response.status}`);
+        }
+    }
+
+    async fetchRawRecords(documentName: string, schemaName: string): Promise<Uint8Array> {
+        const doFetch = this.requireFetch();
+        const endpoint = this.resolve(this.paths.documentRecords(documentName, schemaName));
+        const response = await doFetch(endpoint, { headers: { Accept: "application/x-scrt" } });
+        if (!response.ok) {
+            throw new Error(`fetch records failed: ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+    }
+
+    private async fetchBundle(schemaName?: string, documentName?: string): Promise<{
         document: Document;
         payload?: SchemaBundlePayload;
         fingerprint: string;
         updatedAt: string;
         schemas: SchemaIndexEntry[];
     }> {
-        if (typeof fetch !== "function") {
-            throw new Error("fetch is not available in this runtime");
+        const doFetch = this.requireFetch();
+        const params = new URLSearchParams();
+        if (documentName) {
+            params.set("document", documentName);
         }
-        let endpoint = this.resolve("/schemas/bundle");
         if (schemaName) {
-            const separator = endpoint.includes("?") ? "&" : "?";
-            endpoint = `${endpoint}${separator}schema=${encodeURIComponent(schemaName)}`;
+            params.set("schema", schemaName);
         }
-        const response = await fetch(endpoint, { headers: { Accept: "application/x-scrt-bundle" } });
+        const endpoint = appendQuery(this.resolve(this.paths.bundle), params);
+        const response = await doFetch(endpoint, { headers: { Accept: "application/x-scrt-bundle" } });
         if (!response.ok) {
             throw new Error(`schema bundle fetch failed: ${response.status}`);
         }
         const parsed = parseBinaryBundle(await response.arrayBuffer());
-        const document = parseSCRT(parsed.document, "bundle");
-        this.cachedDoc = document;
+        const document = parseSCRT(parsed.document, documentName ?? "bundle");
+        this.cachedDocs.set(this.documentCacheKey(documentName), document);
         const payload = parsed.payload;
         return {
             document,
@@ -107,6 +225,17 @@ export class SchemaHttpClient {
             return pathname;
         }
         return new URL(pathname, this.baseUrl).toString();
+    }
+
+    private requireFetch(): typeof fetch {
+        if (typeof fetch !== "function") {
+            throw new Error("fetch is not available in this runtime");
+        }
+        return fetch;
+    }
+
+    private documentCacheKey(name?: string): string {
+        return name ?? "__default__";
     }
 }
 
@@ -223,4 +352,23 @@ function toHex(value: bigint): string {
 function nanosToISO(value: bigint): string {
     const millis = Number(value / 1_000_000n);
     return new Date(millis).toISOString();
+}
+
+function appendQuery(url: string, params: URLSearchParams): string {
+    const query = params.toString();
+    if (!query) {
+        return url;
+    }
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}${query}`;
+}
+
+function toRequestBody(source: string | Uint8Array | ArrayBuffer): BodyInit {
+    if (typeof source === "string") {
+        return source;
+    }
+    if (source instanceof Uint8Array) {
+        return source;
+    }
+    return new Uint8Array(source);
 }
