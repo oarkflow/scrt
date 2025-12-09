@@ -48,3 +48,17 @@
 1010, "Diego Costa", "diego.c@example.com"
 1011, "Hana Suzuki", "hana.s@example.com"
 1012, "Omar Farouk", "omar.f@example.com"
+
+@schema:Incident
+@field IncidentID uint64 serial
+@field Title string
+@field Started datetime
+@field Alerted timestamptz
+@field Resolved timestamp
+@field ReportDate date
+@field SLA duration
+
+@Incident
+2001, "Core API latency", 2025-01-15T10:05:00, 2025-01-15T10:05:15-08:00, 2025-01-15T18:45:00, 2025/01/16, 2h10m
+2002, "Search cluster failover", 2025-01-22T15:30:00, 2025-01-22T15:35:00Z, 2025-01-22T21:05:00, 2025-01-23, 4h35m
+2003, "Analytics backlog", 2025-02-01T07:00:00, 2025-02-01T07:05:30+01:00, 1706773200, 02-02-2025, 1d4h

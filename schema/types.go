@@ -18,6 +18,11 @@ const (
 	KindInt64
 	KindFloat64
 	KindBytes
+	KindDate
+	KindDateTime
+	KindTimestamp
+	KindTimestampTZ
+	KindDuration
 )
 
 // Field models a single field declaration inside a schema.

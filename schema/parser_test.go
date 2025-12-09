@@ -4,8 +4,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oarkflow/scrt/schema"
+	"github.com/oarkflow/scrt/temporal"
 )
 
 func TestParseSampleFile(t *testing.T) {
@@ -81,6 +83,61 @@ func TestParseDefaultsAndTypes(t *testing.T) {
 		}
 		if !c.chk(f.Default) {
 			t.Fatalf("field %s default mismatch: %+v", c.name, f.Default)
+		}
+	}
+}
+
+func TestParseTemporalDefaults(t *testing.T) {
+	src := `@schema Temporal
+@field Day date default=2025-01-02
+@field Seen datetime default="2025-01-02 15:04:05"
+@field Stamp timestamptz default="2025-01-02T15:04:05-05:00"
+@field Epoch timestamp default=1704210000
+@field Window duration default=1d2h
+`
+	doc, err := schema.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sch, ok := doc.Schema("Temporal")
+	if !ok {
+		t.Fatalf("schema missing")
+	}
+	checks := []struct {
+		name   string
+		kind   schema.FieldKind
+		expect func(*schema.DefaultValue) bool
+	}{
+		{"Day", schema.KindDate, func(v *schema.DefaultValue) bool {
+			return v != nil && temporal.DecodeDate(v.Int).Equal(time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC))
+		}},
+		{"Seen", schema.KindDateTime, func(v *schema.DefaultValue) bool {
+			expected := time.Date(2025, 1, 2, 15, 4, 5, 0, time.UTC)
+			return v != nil && temporal.DecodeInstant(v.Int).Equal(expected)
+		}},
+		{"Stamp", schema.KindTimestampTZ, func(v *schema.DefaultValue) bool {
+			return v != nil && v.String != ""
+		}},
+		{"Epoch", schema.KindTimestamp, func(v *schema.DefaultValue) bool {
+			expected := time.Unix(1704210000, 0).UTC()
+			return v != nil && temporal.DecodeInstant(v.Int).Equal(expected)
+		}},
+		{"Window", schema.KindDuration, func(v *schema.DefaultValue) bool {
+			expected := 26 * time.Hour
+			return v != nil && time.Duration(v.Int) == expected
+		}},
+	}
+	for _, chk := range checks {
+		f, ok := sch.FieldIndex(chk.name)
+		if !ok {
+			t.Fatalf("missing field %s", chk.name)
+		}
+		field := sch.Fields[f]
+		if field.Kind != chk.kind {
+			t.Fatalf("field %s kind mismatch: got %d", chk.name, field.Kind)
+		}
+		if !chk.expect(field.Default) {
+			t.Fatalf("default mismatch for %s: %+v", chk.name, field.Default)
 		}
 	}
 }

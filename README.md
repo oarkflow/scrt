@@ -84,6 +84,20 @@ if err := scrt.Unmarshal(payload, msgSchema, &out); err != nil { panic(err) }
 
 See `examples/basic` for a runnable sample.
 
+### Temporal Field Types
+
+The schema DSL understands five time-aware primitives in addition to the existing numeric/string kinds:
+
+| DSL Type    | Go Type        | Storage       | Accepted Literals |
+|-------------|----------------|---------------|-------------------|
+| `date`      | `time.Time`    | UTC midnight  | `yyyy-mm-dd`, `dd/mm/yyyy`, `mm-dd-yyyy`, `Jan 02 2006`, etc. |
+| `datetime`  | `time.Time`    | UTC instant   | Any supported date format with 24h/12h clock (no timezone). |
+| `timestamp` | `time.Time`    | UTC instant   | Same as `datetime` plus Unix epoch integers/decimals. |
+| `timestamptz` | `time.Time`  | RFC3339 string| Any timestamp with explicit zone/offset (e.g. `2025-01-02T10:30:00-05:00`). |
+| `duration`  | `time.Duration`| int64 nanos   | Go durations plus day suffixes (`1d2h`, `90m`, `4d`). |
+
+At marshal time SCRT accepts `time.Time`, `time.Duration`, numeric epochs, or strings in the formats above. During unmarshal these fields map back to the native Go types, while map targets can opt into strings (ISO8601/RFC3339) or the raw `time.Time`/`time.Duration` values.
+
 ## Caching Strategy
 
 `schema.Cache` retains compiled schemas keyed by fingerprint and file path. Each cache entry stores:
@@ -123,8 +137,12 @@ GOEXPERIMENT=arenas go run ./examples/schema_server -schema data.scrt -addr :808
 VITE_SCRT_SERVER=http://localhost:8080 npm run dev
 ```
 
-The client is located under `src/` and pulls schemas via `SchemaHttpClient`, fetches
-`/api/messages`, and renders the decoded rows in the browser.
+The client is located under `src/` and pulls schema + payload data from
+`/schemas/bundle?schema=Message`. That endpoint now emits a compact binary
+envelope (magic `SCB1`, version byte, document fingerprint, unix-nano timestamp,
+u32-length schema DSL, u16-count index entries, optional payload section). No JSON
+parsing is required on either side, and the TypeScript helper reconstructs the
+`Document` directly from the bytes.
 
 ## Shared Schema Gateway
 
@@ -135,8 +153,9 @@ clients can reuse the exact same DSL without shipping duplicate copies.
 go run ./examples/schema_server -schema ./data.scrt -addr :8080
 ```
 
-This starts a tiny server with two routes:
+This starts a tiny server with bundle + schema routes:
 
+- `GET /schemas/bundle` – emits `application/x-scrt-bundle`, a binary layout consisting of magic/version headers, fingerprint, unix-nano timestamp, the raw `.scrt` DSL (u32 length + bytes), the schema index entries, and (optionally) a payload block containing the raw SCRT binary rows. No base64 or JSON is used.
 - `GET /schemas/index` – JSON metadata (name, fingerprint, field count).
 - `GET /schemas/doc` – raw `.scrt` DSL with `X-SCRT-Fingerprint` header.
 
@@ -146,18 +165,18 @@ On the client side, use the `SchemaHttpClient` helper to stay in sync:
 import { SchemaHttpClient } from "./ts/apiClient";
 
 const client = new SchemaHttpClient("http://localhost:8080");
-const messageSchema = await client.schema("Message");
-const payload = await client.marshal("Message", [
-  { MsgID: 1, User: 42, Text: "hey", Lang: "en" },
-]);
-
-// Later, hydrate rows back into structs using the shared schema cache
-const decoded = await client.unmarshal("Message", payload, () => ({
+const decoded = await client.fetchRecords("Message", () => ({
   MsgID: 0,
   User: 0,
   Text: "",
   Lang: "",
 }));
+
+// marshal/unmarshal helpers are still available when you have local data
+const messageSchema = await client.schema("Message");
+const payload = await client.marshal("Message", [
+  { MsgID: 1, User: 42, Text: "hey", Lang: "en" },
+]);
 ```
 
 Both sides rely on the same `.scrt` file, fingerprints, and field order,

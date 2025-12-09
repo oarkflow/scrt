@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
+	"github.com/oarkflow/scrt/temporal"
 )
 
 // UnmarshalOptions controls decoding behavior.
@@ -359,7 +361,7 @@ func assignRowToMapSigned[T signedInt](row codec.Row, dst map[string]T, s *schem
 		if !vals[idx].Set {
 			continue
 		}
-		if field.Kind != schema.KindInt64 {
+		if !intStoredKind(field.Kind) {
 			return fmt.Errorf("scrt: field %s kind %d cannot assign to signed map", field.Name, field.Kind)
 		}
 		dst[field.Name] = T(vals[idx].Int)
@@ -429,10 +431,22 @@ func assignRowToMapString(row codec.Row, dst map[string]string, s *schema.Schema
 		if !vals[idx].Set {
 			continue
 		}
-		if field.Kind != schema.KindString {
+		var formatted string
+		switch field.Kind {
+		case schema.KindString:
+			formatted = vals[idx].Str
+		case schema.KindDate:
+			formatted = temporal.FormatDate(temporal.DecodeDate(vals[idx].Int))
+		case schema.KindDateTime, schema.KindTimestamp:
+			formatted = temporal.FormatInstant(temporal.DecodeInstant(vals[idx].Int))
+		case schema.KindTimestampTZ:
+			formatted = vals[idx].Str
+		case schema.KindDuration:
+			formatted = time.Duration(vals[idx].Int).String()
+		default:
 			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]string", field.Name, field.Kind)
 		}
-		dst[field.Name] = vals[idx].Str
+		dst[field.Name] = formatted
 	}
 	return nil
 }
@@ -501,6 +515,49 @@ func assignRowValue(field reflect.Value, kind schema.FieldKind, val codec.Value)
 			return nil
 		}
 		return assignInterface(field, data)
+	case schema.KindDate:
+		decoded := temporal.DecodeDate(val.Int)
+		if assignTimeField(field, decoded) {
+			return nil
+		}
+		if assignStringField(field, temporal.FormatDate(decoded)) {
+			return nil
+		}
+		return assignInterface(field, decoded)
+	case schema.KindDateTime, schema.KindTimestamp:
+		decoded := temporal.DecodeInstant(val.Int)
+		if assignTimeField(field, decoded) {
+			return nil
+		}
+		if assignStringField(field, temporal.FormatInstant(decoded)) {
+			return nil
+		}
+		return assignInterface(field, decoded)
+	case schema.KindTimestampTZ:
+		var parsed time.Time
+		var parseErr error
+		if val.Str != "" {
+			parsed, parseErr = temporal.ParseTimestampTZ(val.Str)
+		}
+		if parseErr == nil && assignTimeField(field, parsed) {
+			return nil
+		}
+		if assignStringField(field, val.Str) {
+			return nil
+		}
+		if parseErr == nil {
+			return assignInterface(field, parsed)
+		}
+		return assignInterface(field, val.Str)
+	case schema.KindDuration:
+		dur := time.Duration(val.Int)
+		if assignDurationField(field, dur) {
+			return nil
+		}
+		if assignIntField(field, val.Int) {
+			return nil
+		}
+		return assignInterface(field, dur)
 	default:
 		return fmt.Errorf("unsupported schema kind %d", kind)
 	}
@@ -621,6 +678,36 @@ func assignBytesField(field reflect.Value, data []byte) bool {
 	return false
 }
 
+func assignTimeField(field reflect.Value, value time.Time) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	if f.Type() == timeType {
+		f.Set(reflect.ValueOf(value))
+		return true
+	}
+	return false
+}
+
+func assignDurationField(field reflect.Value, value time.Duration) bool {
+	if field.Kind() == reflect.Interface {
+		return false
+	}
+	f, ok := derefSettable(field)
+	if !ok {
+		return false
+	}
+	if f.Type() == durationType {
+		f.Set(reflect.ValueOf(value))
+		return true
+	}
+	return false
+}
+
 func derefSettable(v reflect.Value) (reflect.Value, bool) {
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -648,8 +735,31 @@ func valueFromRow(kind schema.FieldKind, v codec.Value) interface{} {
 		return v.Str
 	case schema.KindBytes:
 		return bytesForAssignment(v)
+	case schema.KindDate:
+		return temporal.DecodeDate(v.Int)
+	case schema.KindDateTime, schema.KindTimestamp:
+		return temporal.DecodeInstant(v.Int)
+	case schema.KindTimestampTZ:
+		if v.Str == "" {
+			return time.Time{}
+		}
+		if parsed, err := temporal.ParseTimestampTZ(v.Str); err == nil {
+			return parsed
+		}
+		return v.Str
+	case schema.KindDuration:
+		return time.Duration(v.Int)
 	default:
 		return nil
+	}
+}
+
+func intStoredKind(kind schema.FieldKind) bool {
+	switch kind {
+	case schema.KindInt64, schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
+		return true
+	default:
+		return false
 	}
 }
 

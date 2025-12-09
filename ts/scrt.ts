@@ -141,9 +141,14 @@ export function unmarshal<T>(
     schema: Schema,
     factory: () => T,
 ): T[] {
+    const binary = toUint8ArrayOrNull(source);
+    const decode = createRowDecoder(schema, factory);
+    if (binary && isBinarySCRT(binary)) {
+        const rows = decodeBinaryDocument(binary, schema);
+        return rows.map((row) => decode(row));
+    }
     const text = normalizeInput(source);
     const doc = parseSCRT(text, schema.name);
-    const decode = createRowDecoder(schema, factory);
     const rows = doc.records(schema.name);
     return rows.map((row) => decode(row));
 }
@@ -990,6 +995,276 @@ function unescapeString(input: string): string {
         result += "\\";
     }
     return result;
+}
+
+function toUint8ArrayOrNull(source: string | Buffer | ArrayBuffer | Uint8Array): Uint8Array | undefined {
+    if (source instanceof Uint8Array) {
+        return source;
+    }
+    if (source instanceof ArrayBuffer) {
+        return new Uint8Array(source);
+    }
+    if (typeof Buffer !== "undefined" && typeof Buffer.isBuffer === "function" && Buffer.isBuffer(source)) {
+        return new Uint8Array(source);
+    }
+    return undefined;
+}
+
+const SCRT_MAGIC = [83, 67, 82, 84]; // "SCRT"
+
+function isBinarySCRT(data: Uint8Array): boolean {
+    if (data.length < SCRT_MAGIC.length + 1 + 8) {
+        return false;
+    }
+    for (let i = 0; i < SCRT_MAGIC.length; i++) {
+        if (data[i] !== SCRT_MAGIC[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function decodeBinaryDocument(payload: Uint8Array, schema: Schema): Row[] {
+    const cursor = new BinaryCursor(payload);
+    const magic = cursor.readBytes(SCRT_MAGIC.length);
+    for (let i = 0; i < SCRT_MAGIC.length; i++) {
+        if (magic[i] !== SCRT_MAGIC[i]) {
+            throw new Error("scrt: invalid magic header");
+        }
+    }
+    const version = cursor.readByte();
+    if (version !== 1) {
+        throw new Error(`scrt: unsupported version ${version}`);
+    }
+    const fp = cursor.readUint64LE();
+    if (fp !== schema.fingerprint()) {
+        throw new Error("scrt: schema fingerprint mismatch");
+    }
+    const rows: Row[] = [];
+    while (cursor.remaining() > 0) {
+        const pageLen = cursor.readUvarintNumber("page length");
+        if (pageLen === 0) {
+            break;
+        }
+        if (cursor.remaining() < pageLen) {
+            throw new Error("scrt: truncated page payload");
+        }
+        const page = cursor.readBytes(pageLen);
+        rows.push(...decodeBinaryPage(page, schema));
+    }
+    return rows;
+}
+
+function decodeBinaryPage(payload: Uint8Array, schema: Schema): Row[] {
+    const cursor = new BinaryCursor(payload);
+    const rowCount = cursor.readUvarintNumber("row count");
+    const columnCount = cursor.readUvarintNumber("column count");
+    if (columnCount !== schema.fields.length) {
+        throw new Error("scrt: column count mismatch");
+    }
+    const columnValues: Array<unknown[]> = new Array(columnCount);
+    for (let i = 0; i < columnCount; i++) {
+        const fieldIndex = cursor.readUvarintNumber("field index");
+        const kind = cursor.readByte();
+        const payloadLen = cursor.readUvarintNumber("column payload length");
+        if (cursor.remaining() < payloadLen) {
+            throw new Error("scrt: truncated column payload");
+        }
+        const columnPayload = cursor.readBytes(payloadLen);
+        columnValues[fieldIndex] = decodeColumnValues(kind as FieldKind, columnPayload, rowCount);
+    }
+    const rows: Row[] = new Array(rowCount);
+    for (let rowIdx = 0; rowIdx < rowCount; rowIdx++) {
+        const row: Row = {};
+        for (let fieldIdx = 0; fieldIdx < schema.fields.length; fieldIdx++) {
+            const field = schema.fields[fieldIdx];
+            const col = columnValues[fieldIdx];
+            if (!col || rowIdx >= col.length) {
+                continue;
+            }
+            row[field.name] = col[rowIdx];
+        }
+        rows[rowIdx] = row;
+    }
+    return rows;
+}
+
+function decodeColumnValues(kind: FieldKind, payload: Uint8Array, expectedRows: number): unknown[] {
+    const cursor = new BinaryCursor(payload);
+    switch (kind) {
+        case FieldKind.Uint64:
+        case FieldKind.Ref: {
+            const count = cursor.readUvarintNumber("uint column count");
+            const values: unknown[] = new Array(count);
+            for (let i = 0; i < count; i++) {
+                const raw = cursor.readUvarint();
+                values[i] = bigintToJsNumber(raw);
+            }
+            ensureRowCount(count, expectedRows, kind);
+            return values;
+        }
+        case FieldKind.Int64: {
+            const count = cursor.readUvarintNumber("int column count");
+            const values: unknown[] = new Array(count);
+            for (let i = 0; i < count; i++) {
+                const raw = cursor.readVarint();
+                values[i] = bigintToJsNumber(raw);
+            }
+            ensureRowCount(count, expectedRows, kind);
+            return values;
+        }
+        case FieldKind.Float64: {
+            const count = cursor.readUvarintNumber("float column count");
+            const values: unknown[] = new Array(count);
+            for (let i = 0; i < count; i++) {
+                values[i] = cursor.readFloat64();
+            }
+            ensureRowCount(count, expectedRows, kind);
+            return values;
+        }
+        case FieldKind.Bool: {
+            const count = cursor.readUvarintNumber("bool column count");
+            if (cursor.remaining() < count) {
+                throw new Error("scrt: truncated bool column");
+            }
+            const values: unknown[] = new Array(count);
+            for (let i = 0; i < count; i++) {
+                values[i] = cursor.readByte() !== 0;
+            }
+            ensureRowCount(count, expectedRows, kind);
+            return values;
+        }
+        case FieldKind.String: {
+            const dictLen = cursor.readUvarintNumber("string dictionary length");
+            const dict = new Array<string>(dictLen);
+            for (let i = 0; i < dictLen; i++) {
+                const byteLen = cursor.readUvarintNumber("string literal length");
+                dict[i] = textDecoder.decode(cursor.readBytes(byteLen));
+            }
+            const indexLen = cursor.readUvarintNumber("string index length");
+            const values: unknown[] = new Array(indexLen);
+            for (let i = 0; i < indexLen; i++) {
+                const idx = cursor.readUvarintNumber("string index value");
+                values[i] = dict[idx] ?? "";
+            }
+            ensureRowCount(indexLen, expectedRows, kind);
+            return values;
+        }
+        case FieldKind.Bytes: {
+            const count = cursor.readUvarintNumber("bytes column count");
+            const values: unknown[] = new Array(count);
+            for (let i = 0; i < count; i++) {
+                const len = cursor.readUvarintNumber("bytes length");
+                values[i] = cursor.readBytes(len);
+            }
+            ensureRowCount(count, expectedRows, kind);
+            return values;
+        }
+        default:
+            throw new Error(`scrt: unsupported binary field kind ${kind}`);
+    }
+}
+
+function ensureRowCount(actual: number, expected: number, kind: FieldKind): void {
+    if (actual !== expected) {
+        throw new Error(`scrt: column kind ${kind} count ${actual} != expected ${expected}`);
+    }
+}
+
+class BinaryCursor {
+    private view: DataView;
+    private offset = 0;
+
+    constructor(private readonly data: Uint8Array) {
+        this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    }
+
+    remaining(): number {
+        return this.data.length - this.offset;
+    }
+
+    readByte(): number {
+        if (this.offset >= this.data.length) {
+            throw new Error("scrt: unexpected EOF");
+        }
+        return this.data[this.offset++];
+    }
+
+    readBytes(length: number): Uint8Array {
+        if (this.offset + length > this.data.length) {
+            throw new Error("scrt: unexpected EOF");
+        }
+        const slice = this.data.subarray(this.offset, this.offset + length);
+        this.offset += length;
+        return slice;
+    }
+
+    readUvarint(): bigint {
+        let x = 0n;
+        let s = 0n;
+        for (let i = 0; i < 10; i++) {
+            if (this.offset >= this.data.length) {
+                throw new Error("scrt: malformed varint");
+            }
+            const b = BigInt(this.data[this.offset++]);
+            if (b < 0x80n) {
+                if (i === 9 && b > 1n) {
+                    throw new Error("scrt: varint overflow");
+                }
+                return x | (b << s);
+            }
+            x |= (b & 0x7fn) << s;
+            s += 7n;
+        }
+        throw new Error("scrt: varint overflow");
+    }
+
+    readUvarintNumber(label: string): number {
+        const value = this.readUvarint();
+        return bigintToNumber(value, label);
+    }
+
+    readVarint(): bigint {
+        const ux = this.readUvarint();
+        const signed = (ux >> 1n) ^ (-(ux & 1n));
+        return signed;
+    }
+
+    readFloat64(): number {
+        if (this.offset + 8 > this.data.length) {
+            throw new Error("scrt: truncated float64");
+        }
+        const value = this.view.getFloat64(this.offset, true);
+        this.offset += 8;
+        return value;
+    }
+
+    readUint64LE(): bigint {
+        if (this.offset + 8 > this.data.length) {
+            throw new Error("scrt: truncated fingerprint");
+        }
+        let result = 0n;
+        for (let i = 0; i < 8; i++) {
+            const byte = BigInt(this.data[this.offset + i]);
+            result |= byte << BigInt(i * 8);
+        }
+        this.offset += 8;
+        return result;
+    }
+}
+
+function bigintToNumber(value: bigint, label: string): number {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`scrt: ${label} exceeds JS safe integer range`);
+    }
+    return Number(value);
+}
+
+function bigintToJsNumber(value: bigint): number | bigint {
+    if (value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+        return Number(value);
+    }
+    return value;
 }
 
 function isNodeRuntime(): boolean {

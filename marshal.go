@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
+	"github.com/oarkflow/scrt/temporal"
 )
 
 const nestedValueKey = "value"
@@ -216,6 +218,10 @@ func populateRowFromMap(row codec.Row, value reflect.Value, s *schema.Schema) er
 		return populateRowFromMapString(row, data, s)
 	case map[string][]byte:
 		return populateRowFromMapBytes(row, data, s)
+	case map[string]time.Time:
+		return populateRowFromMapTime(row, data, s)
+	case map[string]time.Duration:
+		return populateRowFromMapDuration(row, data, s)
 	default:
 		return populateRowFromMapReflect(row, value, s)
 	}
@@ -290,13 +296,20 @@ func populateRowFromMapSigned[T signedInt](row codec.Row, data map[string]T, s *
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindInt64 {
-			return fmt.Errorf("scrt: field %s expects int64, got kind %d", field.Name, field.Kind)
+		if field.Kind == schema.KindInt64 {
+			var val codec.Value
+			val.Set = true
+			val.Int = int64(v)
+			row.SetByIndex(idx, val)
+			continue
 		}
-		var val codec.Value
-		val.Set = true
-		val.Int = int64(v)
-		row.SetByIndex(idx, val)
+		if intStoredKind(field.Kind) {
+			if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(int64(v))); err != nil {
+				return fmt.Errorf("scrt: field %s: %w", field.Name, err)
+			}
+			continue
+		}
+		return fmt.Errorf("scrt: field %s expects int64, got kind %d", field.Name, field.Kind)
 	}
 	return nil
 }
@@ -369,13 +382,16 @@ func populateRowFromMapString(row codec.Row, data map[string]string, s *schema.S
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindString {
-			return fmt.Errorf("scrt: field %s expects string, got kind %d", field.Name, field.Kind)
+		if field.Kind == schema.KindString {
+			var val codec.Value
+			val.Set = true
+			val.Str = v
+			row.SetByIndex(idx, val)
+			continue
 		}
-		var val codec.Value
-		val.Set = true
-		val.Str = v
-		row.SetByIndex(idx, val)
+		if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(v)); err != nil {
+			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
+		}
 	}
 	return nil
 }
@@ -396,6 +412,58 @@ func populateRowFromMapBytes(row codec.Row, data map[string][]byte, s *schema.Sc
 		row.SetByIndex(idx, val)
 	}
 	return nil
+}
+
+func populateRowFromMapTime(row codec.Row, data map[string]time.Time, s *schema.Schema) error {
+	for idx, field := range s.Fields {
+		v, ok := data[field.Name]
+		if !ok {
+			continue
+		}
+		if !isTemporalField(field.Kind) {
+			return fmt.Errorf("scrt: field %s expects temporal kind, got %d", field.Name, field.Kind)
+		}
+		if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(v)); err != nil {
+			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
+		}
+	}
+	return nil
+}
+
+func populateRowFromMapDuration(row codec.Row, data map[string]time.Duration, s *schema.Schema) error {
+	for idx, field := range s.Fields {
+		v, ok := data[field.Name]
+		if !ok {
+			continue
+		}
+		if field.Kind != schema.KindDuration {
+			return fmt.Errorf("scrt: field %s expects duration kind, got %d", field.Name, field.Kind)
+		}
+		if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(v)); err != nil {
+			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
+		}
+	}
+	return nil
+}
+
+func encodeTemporalInt(kind schema.FieldKind, t time.Time) int64 {
+	switch kind {
+	case schema.KindDate:
+		return temporal.EncodeDate(t)
+	case schema.KindDateTime, schema.KindTimestamp:
+		return temporal.EncodeInstant(t)
+	default:
+		return temporal.EncodeInstant(t)
+	}
+}
+
+func isTemporalField(kind schema.FieldKind) bool {
+	switch kind {
+	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindTimestampTZ:
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneBytes(src []byte) []byte {
@@ -504,6 +572,24 @@ func assignValueToRow(row codec.Row, idx int, kind schema.FieldKind, v reflect.V
 			return err
 		}
 		val.Bytes = b
+	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp:
+		t, err := valueAsTime(v, kind)
+		if err != nil {
+			return err
+		}
+		val.Int = encodeTemporalInt(kind, t)
+	case schema.KindTimestampTZ:
+		t, err := valueAsTime(v, kind)
+		if err != nil {
+			return err
+		}
+		val.Str = temporal.FormatTimestampTZ(t)
+	case schema.KindDuration:
+		d, err := valueAsDuration(v)
+		if err != nil {
+			return err
+		}
+		val.Int = int64(d)
 	default:
 		return fmt.Errorf("scrt: unsupported field kind %d", kind)
 	}
@@ -554,6 +640,24 @@ func assignAnyToRow(row codec.Row, idx int, kind schema.FieldKind, src any) erro
 			return err
 		}
 		val.Bytes = b
+	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp:
+		t, err := anyAsTime(kind, src)
+		if err != nil {
+			return err
+		}
+		val.Int = encodeTemporalInt(kind, t)
+	case schema.KindTimestampTZ:
+		t, err := anyAsTime(kind, src)
+		if err != nil {
+			return err
+		}
+		val.Str = temporal.FormatTimestampTZ(t)
+	case schema.KindDuration:
+		d, err := anyAsDuration(src)
+		if err != nil {
+			return err
+		}
+		val.Int = int64(d)
 	default:
 		return fmt.Errorf("scrt: unsupported field kind %d", kind)
 	}

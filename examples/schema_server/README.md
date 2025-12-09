@@ -12,9 +12,24 @@ GOEXPERIMENT=arenas go run ./examples/schema_server -schema data.scrt -addr :808
 
 The server exposes:
 
-- `GET /schemas/index` – JSON index of schemas + fingerprints.
-- `GET /schemas/doc` – raw `.scrt` schema file (cached server-side).
-- `GET /api/messages` – binary SCRT payload by default, or textual SCRT when `?format=text` is supplied (handy for the current TS example).
+- `GET /schemas/bundle` – schema text + metadata, optionally including binary SCRT payloads when `?schema=Name` is supplied.
+- `GET /schemas/index` – JSON index of schemas + fingerprints (used mainly for debugging).
+- `GET /schemas/doc` – raw `.scrt` schema file (cached server-side, still available for tooling).
+
+`/schemas/bundle` now speaks a binary envelope so no JSON ever crosses the wire. The layout is:
+
+| Offset | Size       | Description |
+|--------|------------|-------------|
+| 0-3    | 4 bytes    | Magic `SCB1` |
+| 4      | 1 byte     | Protocol version (`1`) |
+| 5-12   | 8 bytes    | Document fingerprint (big-endian uint64) |
+| 13-20  | 8 bytes    | `updatedAt` as Unix nanos (big-endian int64) |
+| 21+    | u32 + data | Schema DSL length + UTF-8 bytes |
+| …      | u16 + rows | Schema index count followed by entries (`u16 name length + utf-8 name + u64 fingerprint + u16 field count`) |
+| …      | 1 byte     | Payload flag (0 = none, 1 = present) |
+| …      | if flag=1  | `u16` schema name length + name, `u64` schema fingerprint, `u32` payload length + raw SCRT bytes |
+
+The TypeScript client decodes this via `SchemaHttpClient`, so you never need to parse JSON to hydrate schemas or payloads.
 
 ## 2. Run the TypeScript client
 
@@ -27,9 +42,8 @@ SCRT_SERVER=http://localhost:8080 npx ts-node examples/schema_server/client.ts
 
 The script will:
 
-1. Download the schema document via `SchemaHttpClient` (which caches fingerprints).
-2. Fetch `/api/messages?format=text` so it can parse the textual SCRT payload without needing the binary decoder yet.
-3. Decode the rows into typed objects using the same schema metadata.
+1. Request `/schemas/bundle?schema=Message` which returns the schema text plus the binary SCRT payload in one round-trip.
+2. Parse the schema via `SchemaHttpClient` and decode the bundled payload with the shared metadata.
 
 You should see output similar to:
 

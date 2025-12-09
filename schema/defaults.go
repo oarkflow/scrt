@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/oarkflow/scrt/temporal"
 )
 
 // DefaultValue keeps the typed literal configured for a field.
@@ -39,6 +41,16 @@ func (d *DefaultValue) hashKey() string {
 		return fmt.Sprintf("str:%s", d.String)
 	case KindBytes:
 		return fmt.Sprintf("bytes:%s", base64.StdEncoding.EncodeToString(d.Bytes))
+	case KindDate:
+		return fmt.Sprintf("date:%d", d.Int)
+	case KindDateTime:
+		return fmt.Sprintf("datetime:%d", d.Int)
+	case KindTimestamp:
+		return fmt.Sprintf("timestamp:%d", d.Int)
+	case KindDuration:
+		return fmt.Sprintf("duration:%d", d.Int)
+	case KindTimestampTZ:
+		return fmt.Sprintf("timestamptz:%s", d.String)
 	default:
 		return ""
 	}
@@ -87,6 +99,56 @@ func parseDefaultLiteral(kind FieldKind, raw string) (*DefaultValue, error) {
 			return nil, err
 		}
 		val.Bytes = bytesVal
+	case KindDate:
+		unquoted, err := parseStringLiteral(raw)
+		if err != nil {
+			return nil, err
+		}
+		t, err := temporal.ParseDate(unquoted)
+		if err != nil {
+			return nil, err
+		}
+		val.Int = temporal.EncodeDate(t)
+	case KindDateTime:
+		unquoted, err := parseStringLiteral(raw)
+		if err != nil {
+			return nil, err
+		}
+		t, err := temporal.ParseDateTime(unquoted)
+		if err != nil {
+			return nil, err
+		}
+		val.Int = temporal.EncodeInstant(t)
+	case KindTimestamp:
+		unquoted, err := parseStringLiteral(raw)
+		if err != nil {
+			return nil, err
+		}
+		t, err := temporal.ParseTimestamp(unquoted)
+		if err != nil {
+			return nil, err
+		}
+		val.Int = temporal.EncodeInstant(t)
+	case KindTimestampTZ:
+		unquoted, err := parseStringLiteral(raw)
+		if err != nil {
+			return nil, err
+		}
+		t, err := temporal.ParseTimestampTZ(unquoted)
+		if err != nil {
+			return nil, err
+		}
+		val.String = temporal.FormatTimestampTZ(t)
+	case KindDuration:
+		unquoted, err := parseStringLiteral(raw)
+		if err != nil {
+			return nil, err
+		}
+		dur, err := temporal.ParseDuration(unquoted)
+		if err != nil {
+			return nil, err
+		}
+		val.Int = int64(dur)
 	default:
 		return nil, fmt.Errorf("defaults not supported for kind %d", kind)
 	}

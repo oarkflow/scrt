@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/oarkflow/scrt/temporal"
 )
 
 // Parse reads schema definitions from the SCRT DSL.
@@ -149,19 +151,29 @@ func parseField(body string) (Field, error) {
 	}
 	field := Field{Name: name, RawType: typ}
 	switch {
-	case typ == "uint64":
+	case strings.EqualFold(typ, "uint64"):
 		field.Kind = KindUint64
-	case typ == "string":
+	case strings.EqualFold(typ, "string"):
 		field.Kind = KindString
-	case typ == "bool":
+	case strings.EqualFold(typ, "bool"):
 		field.Kind = KindBool
-	case typ == "int64":
+	case strings.EqualFold(typ, "int64"):
 		field.Kind = KindInt64
-	case typ == "float64":
+	case strings.EqualFold(typ, "float64"):
 		field.Kind = KindFloat64
-	case typ == "bytes":
+	case strings.EqualFold(typ, "bytes"):
 		field.Kind = KindBytes
-	case strings.HasPrefix(typ, "ref:"):
+	case strings.EqualFold(typ, "date"):
+		field.Kind = KindDate
+	case strings.EqualFold(typ, "datetime"):
+		field.Kind = KindDateTime
+	case strings.EqualFold(typ, "timestamp"):
+		field.Kind = KindTimestamp
+	case strings.EqualFold(typ, "timestamptz"):
+		field.Kind = KindTimestampTZ
+	case strings.EqualFold(typ, "duration"):
+		field.Kind = KindDuration
+	case strings.HasPrefix(strings.ToLower(typ), "ref:"):
 		field.Kind = KindRef
 		parts := strings.Split(typ, ":")
 		if len(parts) != 3 {
@@ -459,6 +471,41 @@ func parseValue(raw string, field *Field) (interface{}, error) {
 			return []byte(unquoted), nil
 		}
 		return []byte(raw), nil
+
+	case KindDate:
+		val, err := temporal.ParseDate(raw)
+		if err != nil {
+			return nil, err
+		}
+		return val, nil
+
+	case KindDateTime:
+		val, err := temporal.ParseDateTime(raw)
+		if err != nil {
+			return nil, err
+		}
+		return val, nil
+
+	case KindTimestamp:
+		val, err := temporal.ParseTimestamp(raw)
+		if err != nil {
+			return nil, err
+		}
+		return val, nil
+
+	case KindTimestampTZ:
+		val, err := temporal.ParseTimestampTZ(raw)
+		if err != nil {
+			return nil, err
+		}
+		return val, nil
+
+	case KindDuration:
+		val, err := temporal.ParseDuration(raw)
+		if err != nil {
+			return nil, err
+		}
+		return val, nil
 
 	default:
 		return raw, nil

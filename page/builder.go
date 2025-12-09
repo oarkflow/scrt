@@ -84,12 +84,18 @@ func newBuilderWithLimit(s *schema.Schema, rowLimit int) *Builder {
 			handle.strings = column.NewStringColumn(rowLimit)
 		case schema.KindBool:
 			handle.bools = column.NewBoolColumn(rowLimit)
-		case schema.KindInt64:
+		case schema.KindInt64,
+			schema.KindDate,
+			schema.KindDateTime,
+			schema.KindTimestamp,
+			schema.KindDuration:
 			handle.ints = column.NewInt64Column(rowLimit)
 		case schema.KindFloat64:
 			handle.floats = column.NewFloat64Column(rowLimit)
 		case schema.KindBytes:
 			handle.bytes = column.NewBytesColumn(rowLimit)
+		case schema.KindTimestampTZ:
+			handle.strings = column.NewStringColumn(rowLimit)
 		default:
 			panic("unsupported field kind")
 		}
@@ -204,11 +210,15 @@ func (b *Builder) Encode(dst *bytes.Buffer) {
 		switch col.kind {
 		case schema.KindUint64, schema.KindRef:
 			col.uints.Encode(&b.columnBuf)
-		case schema.KindString:
+		case schema.KindString, schema.KindTimestampTZ:
 			col.strings.Encode(&b.columnBuf)
 		case schema.KindBool:
 			col.bools.Encode(&b.columnBuf)
-		case schema.KindInt64:
+		case schema.KindInt64,
+			schema.KindDate,
+			schema.KindDateTime,
+			schema.KindTimestamp,
+			schema.KindDuration:
 			col.ints.Encode(&b.columnBuf)
 		case schema.KindFloat64:
 			col.floats.Encode(&b.columnBuf)

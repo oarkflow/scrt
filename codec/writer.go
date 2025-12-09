@@ -60,6 +60,10 @@ func (w *Writer) WriteRow(row Row) error {
 			w.builder.AppendFloat(idx, val.Float)
 		case schema.KindBytes:
 			w.builder.AppendBytes(idx, val.Bytes)
+		case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
+			w.builder.AppendInt(idx, val.Int)
+		case schema.KindTimestampTZ:
+			w.builder.AppendString(idx, val.Str)
 		default:
 			return ErrUnknownField
 		}
@@ -151,6 +155,10 @@ func applyDefault(field schema.Field, v *Value) {
 		} else {
 			v.Bytes = nil
 		}
+	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
+		v.Int = field.Default.Int
+	case schema.KindTimestampTZ:
+		v.Str = field.Default.String
 	}
 	v.Set = true
 }

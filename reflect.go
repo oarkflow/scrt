@@ -6,14 +6,18 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/scrt/schema"
+	"github.com/oarkflow/scrt/temporal"
 )
 
 var (
 	structCache        sync.Map
 	structBindingCache sync.Map
 	stringerType       = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
+	timeType           = reflect.TypeOf(time.Time{})
+	durationType       = reflect.TypeOf(time.Duration(0))
 )
 
 type structBindingKey struct {
@@ -404,5 +408,178 @@ func anyAsBytes(v any) ([]byte, error) {
 		return []byte(val), nil
 	default:
 		return nil, fmt.Errorf("scrt: unsupported bytes source %T", v)
+	}
+}
+
+func valueAsTime(v reflect.Value, kind schema.FieldKind) (time.Time, error) {
+	v = indirect(v)
+	if !v.IsValid() {
+		return time.Time{}, fmt.Errorf("scrt: invalid time value")
+	}
+	if v.Type() == timeType {
+		return v.Interface().(time.Time), nil
+	}
+	switch v.Kind() {
+	case reflect.String:
+		return parseTemporalString(kind, v.String())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return decodeTemporalFromInt(kind, v.Int()), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		value := v.Uint()
+		if value > math.MaxInt64 {
+			return time.Time{}, fmt.Errorf("scrt: epoch value %d overflows", value)
+		}
+		return decodeTemporalFromInt(kind, int64(value)), nil
+	case reflect.Float32, reflect.Float64:
+		seconds := v.Convert(reflect.TypeOf(float64(0))).Float()
+		sec, frac := math.Modf(seconds)
+		return time.Unix(int64(sec), int64(frac*float64(time.Second))).UTC(), nil
+	}
+	if v.Type().ConvertibleTo(timeType) {
+		converted := v.Convert(timeType)
+		return converted.Interface().(time.Time), nil
+	}
+	return time.Time{}, fmt.Errorf("scrt: unsupported time source %s", v.Kind())
+}
+
+func anyAsTime(kind schema.FieldKind, value any) (time.Time, error) {
+	switch val := value.(type) {
+	case time.Time:
+		return val, nil
+	case *time.Time:
+		if val == nil {
+			return time.Time{}, fmt.Errorf("scrt: nil *time.Time")
+		}
+		return *val, nil
+	case string:
+		return parseTemporalString(kind, val)
+	case fmt.Stringer:
+		return parseTemporalString(kind, val.String())
+	case int:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case int8:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case int16:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case int32:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case int64:
+		return decodeTemporalFromInt(kind, val), nil
+	case uint:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case uint8:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case uint16:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case uint32:
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case uint64:
+		if val > math.MaxInt64 {
+			return time.Time{}, fmt.Errorf("scrt: epoch value %d overflows", val)
+		}
+		return decodeTemporalFromInt(kind, int64(val)), nil
+	case float32:
+		sec, frac := math.Modf(float64(val))
+		return time.Unix(int64(sec), int64(frac*float64(time.Second))).UTC(), nil
+	case float64:
+		sec, frac := math.Modf(val)
+		return time.Unix(int64(sec), int64(frac*float64(time.Second))).UTC(), nil
+	default:
+		return time.Time{}, fmt.Errorf("scrt: unsupported time source %T", value)
+	}
+}
+
+func valueAsDuration(v reflect.Value) (time.Duration, error) {
+	v = indirect(v)
+	if !v.IsValid() {
+		return 0, fmt.Errorf("scrt: invalid duration value")
+	}
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return time.Duration(v.Int()), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		value := v.Uint()
+		if value > math.MaxInt64 {
+			return 0, fmt.Errorf("scrt: duration value %d overflows", value)
+		}
+		return time.Duration(value), nil
+	case reflect.Float32, reflect.Float64:
+		seconds := v.Convert(reflect.TypeOf(float64(0))).Float()
+		return time.Duration(seconds * float64(time.Second)), nil
+	case reflect.String:
+		return temporal.ParseDuration(v.String())
+	}
+	if v.Type() == durationType {
+		return v.Interface().(time.Duration), nil
+	}
+	return 0, fmt.Errorf("scrt: unsupported duration source %s", v.Kind())
+}
+
+func anyAsDuration(value any) (time.Duration, error) {
+	switch val := value.(type) {
+	case time.Duration:
+		return val, nil
+	case *time.Duration:
+		if val == nil {
+			return 0, fmt.Errorf("scrt: nil *time.Duration")
+		}
+		return *val, nil
+	case string:
+		return temporal.ParseDuration(val)
+	case int:
+		return time.Duration(val), nil
+	case int8:
+		return time.Duration(val), nil
+	case int16:
+		return time.Duration(val), nil
+	case int32:
+		return time.Duration(val), nil
+	case int64:
+		return time.Duration(val), nil
+	case uint:
+		return time.Duration(val), nil
+	case uint8:
+		return time.Duration(val), nil
+	case uint16:
+		return time.Duration(val), nil
+	case uint32:
+		return time.Duration(val), nil
+	case uint64:
+		if val > math.MaxInt64 {
+			return 0, fmt.Errorf("scrt: duration value %d overflows", val)
+		}
+		return time.Duration(val), nil
+	case float32:
+		return time.Duration(float64(val) * float64(time.Second)), nil
+	case float64:
+		return time.Duration(val * float64(time.Second)), nil
+	default:
+		return 0, fmt.Errorf("scrt: unsupported duration source %T", value)
+	}
+}
+
+func parseTemporalString(kind schema.FieldKind, input string) (time.Time, error) {
+	switch kind {
+	case schema.KindDate:
+		return temporal.ParseDate(input)
+	case schema.KindDateTime:
+		return temporal.ParseDateTime(input)
+	case schema.KindTimestamp:
+		return temporal.ParseTimestamp(input)
+	case schema.KindTimestampTZ:
+		return temporal.ParseTimestampTZ(input)
+	default:
+		return temporal.ParseTimestamp(input)
+	}
+}
+
+func decodeTemporalFromInt(kind schema.FieldKind, raw int64) time.Time {
+	switch kind {
+	case schema.KindDate:
+		return temporal.DecodeDate(raw)
+	case schema.KindDateTime, schema.KindTimestamp, schema.KindTimestampTZ:
+		return temporal.DecodeInstant(raw)
+	default:
+		return temporal.DecodeInstant(raw)
 	}
 }

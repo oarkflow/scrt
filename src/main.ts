@@ -1,5 +1,4 @@
 import { SchemaHttpClient } from "../ts/apiClient";
-import { createRowDecoder, parseSCRT } from "../ts/scrt";
 
 type Message = {
     MsgID: number;
@@ -10,24 +9,14 @@ type Message = {
 
 async function loadMessages(baseUrl: string, target: HTMLElement, status: HTMLElement) {
     try {
-        status.textContent = "Fetching schema index…";
+        status.textContent = "Fetching schema bundle…";
         const client = new SchemaHttpClient(baseUrl);
-        const schema = await client.schema("Message");
-        const response = await fetch(new URL("/api/messages?format=text", baseUrl));
-        if (!response.ok) {
-            throw new Error(`payload fetch failed: ${response.status}`);
-        }
-        status.textContent = "Decoding payload…";
-        const text = await response.text();
-        const doc = parseSCRT(text, `${baseUrl}/api/messages`);
-        const rows = doc.records(schema.name);
-        const decode = createRowDecoder(schema, () => ({
+        const records = await client.fetchRecords<Message>("Message", () => ({
             MsgID: 0,
             User: 0,
             Text: "",
             Lang: "",
         }));
-        const records = rows.map((row) => decode(row));
         renderMessages(records, target);
         status.textContent = `Loaded ${records.length} record(s)`;
     } catch (err) {

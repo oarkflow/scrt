@@ -99,7 +99,7 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			row.values[fieldIdx].Uint = r.pageState.columns[fieldIdx].uints[idx]
 			row.values[fieldIdx].Str = ""
 			row.values[fieldIdx].Set = true
-		case schema.KindString:
+		case schema.KindString, schema.KindTimestampTZ:
 			col := r.pageState.columns[fieldIdx]
 			if idx >= len(col.stringIndexes) {
 				return false, fmt.Errorf("codec: string index missing")
@@ -125,6 +125,9 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			row.values[fieldIdx].Bool = r.pageState.columns[fieldIdx].bools[idx]
 			row.values[fieldIdx].Set = true
 		case schema.KindInt64:
+			row.values[fieldIdx].Int = r.pageState.columns[fieldIdx].ints[idx]
+			row.values[fieldIdx].Set = true
+		case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
 			row.values[fieldIdx].Int = r.pageState.columns[fieldIdx].ints[idx]
 			row.values[fieldIdx].Set = true
 		case schema.KindFloat64:
@@ -253,7 +256,7 @@ func (r *Reader) decodePage(raw []byte) error {
 				return err
 			}
 			col.uints = values
-		case schema.KindString:
+		case schema.KindString, schema.KindTimestampTZ:
 			offsets, lens, indexes, arena, err := decodeStringColumn(payload, col.stringOffsets, col.stringLens, col.stringIndexes)
 			if err != nil {
 				return err
@@ -269,6 +272,12 @@ func (r *Reader) decodePage(raw []byte) error {
 			}
 			col.bools = values
 		case schema.KindInt64:
+			values, err := decodeIntColumn(payload, col.ints)
+			if err != nil {
+				return err
+			}
+			col.ints = values
+		case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
 			values, err := decodeIntColumn(payload, col.ints)
 			if err != nil {
 				return err
