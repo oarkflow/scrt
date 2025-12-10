@@ -1,0 +1,16 @@
+export declare function parseDate(raw: string): Date;
+export declare function parseDateTime(raw: string): Date;
+export declare function parseTimestamp(raw: string): Date;
+export declare function parseTimestampTZ(raw: string): Date;
+export declare function parseDuration(raw: string): bigint;
+export declare function encodeInstant(value: Date | number | bigint): bigint;
+export declare function encodeDate(value: Date | string): bigint;
+export declare function formatTimestampTZ(value: Date): string;
+export declare function canonicalTimestampTZ(raw: string): string;
+export declare function decodeInstant(value: bigint | number): Date;
+export declare function decodeDate(value: bigint | number): Date;
+export declare function formatDate(value: Date): string;
+export declare function formatInstant(value: Date): string;
+export declare function numericTimestamp(raw: string): Date;
+export declare function inferEpochNanoseconds(value: bigint): bigint;
+export declare function formatDuration(nanos: bigint): string;

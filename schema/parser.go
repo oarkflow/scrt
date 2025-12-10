@@ -21,6 +21,7 @@ func Parse(r io.Reader) (*Document, error) {
 	var current *Schema
 	var awaitingName bool
 	var currentDataSchema string
+	var fieldBlock bool
 
 	finishCurrent := func() error {
 		if current == nil {
@@ -31,6 +32,7 @@ func Parse(r io.Reader) (*Document, error) {
 		}
 		doc.Schemas[current.Name] = current
 		current = nil
+		fieldBlock = false
 		return nil
 	}
 
@@ -50,17 +52,30 @@ func Parse(r io.Reader) (*Document, error) {
 		if line == "" {
 			continue
 		}
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if fieldBlock && current != nil && currentDataSchema == "" && !strings.HasPrefix(line, "@") {
+			field, err := parseField(line)
+			if err != nil {
+				return nil, err
+			}
+			current.Fields = append(current.Fields, field)
+			continue
+		}
 
 		if awaitingName {
 			if err := startSchema(line); err != nil {
 				return nil, err
 			}
 			awaitingName = false
+			fieldBlock = false
 			continue
 		}
 
 		switch {
 		case strings.HasPrefix(line, "@schema"):
+			fieldBlock = false
 			currentDataSchema = ""
 			rest := strings.TrimSpace(strings.TrimPrefix(line, "@schema"))
 			if strings.HasPrefix(rest, ":") {
@@ -75,6 +90,7 @@ func Parse(r io.Reader) (*Document, error) {
 			}
 
 		case strings.HasPrefix(line, "@field"):
+			fieldBlock = false
 			currentDataSchema = ""
 			if current == nil {
 				return nil, errors.New("@field outside of schema")
@@ -85,7 +101,14 @@ func Parse(r io.Reader) (*Document, error) {
 			}
 			current.Fields = append(current.Fields, field)
 
+		case strings.HasPrefix(strings.ToLower(line), "fields"):
+			if current == nil {
+				return nil, errors.New("fields block outside of schema")
+			}
+			fieldBlock = true
+			continue
 		case strings.HasPrefix(line, "@"):
+			fieldBlock = false
 			awaitingName = false
 			if err := finishCurrent(); err != nil {
 				return nil, err
@@ -153,30 +176,31 @@ func parseField(body string) (Field, error) {
 		return Field{}, err
 	}
 	field := Field{Name: name, RawType: typ}
+	lower := strings.ToLower(typ)
 	switch {
-	case strings.EqualFold(typ, "uint64"):
+	case lower == "uint64" || lower == "uint":
 		field.Kind = KindUint64
-	case strings.EqualFold(typ, "string"):
+	case lower == "string" || lower == "str" || lower == "text":
 		field.Kind = KindString
-	case strings.EqualFold(typ, "bool"):
+	case lower == "bool" || lower == "boolean":
 		field.Kind = KindBool
-	case strings.EqualFold(typ, "int64"):
+	case lower == "int64" || lower == "int" || lower == "integer":
 		field.Kind = KindInt64
-	case strings.EqualFold(typ, "float64"):
+	case lower == "float64" || lower == "float" || lower == "double":
 		field.Kind = KindFloat64
-	case strings.EqualFold(typ, "bytes"):
+	case lower == "bytes" || lower == "blob":
 		field.Kind = KindBytes
-	case strings.EqualFold(typ, "date"):
+	case lower == "date":
 		field.Kind = KindDate
-	case strings.EqualFold(typ, "datetime"):
+	case lower == "datetime":
 		field.Kind = KindDateTime
-	case strings.EqualFold(typ, "timestamp"):
+	case lower == "timestamp":
 		field.Kind = KindTimestamp
-	case strings.EqualFold(typ, "timestamptz"):
+	case lower == "timestamptz":
 		field.Kind = KindTimestampTZ
-	case strings.EqualFold(typ, "duration"):
+	case lower == "duration":
 		field.Kind = KindDuration
-	case strings.HasPrefix(strings.ToLower(typ), "ref:"):
+	case strings.HasPrefix(lower, "ref:"):
 		field.Kind = KindRef
 		parts := strings.Split(typ, ":")
 		if len(parts) != 3 {

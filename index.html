@@ -12,6 +12,11 @@
     <header>
         <h1>SCRT Schema Client</h1>
         <p class="subtitle">Shared Go/TypeScript schema cache demo</p>
+        <nav>
+            <a href="/index.html">Schema Console</a>
+            <a href="/showcase.html">Example Showcase</a>
+            <a href="https://github.com/oarkflow/scrt" target="_blank" rel="noreferrer">GitHub Repo</a>
+        </nav>
     </header>
     <main>
         <section class="panel">
@@ -19,22 +24,16 @@
                 <label for="server">Server URL</label>
                 <input id="server" type="text" value="http://localhost:8080" />
             </div>
-            <div class="grid-2">
-                <div>
-                    <label for="document-select">Document</label>
-                    <select id="document-select"></select>
-                </div>
-                <div>
-                    <label for="schema-select">Schema</label>
-                    <select id="schema-select"></select>
-                </div>
+            <div class="field">
+                <label for="schema-select">Schema</label>
+                <select id="schema-select"></select>
             </div>
             <div class="actions">
-                <button id="refresh-docs" type="button">Refresh Documents</button>
+                <button id="refresh-docs" type="button">Refresh Schemas</button>
                 <button id="load-records" type="button">Load Records</button>
             </div>
             <div id="schema-preview" class="schema-preview">
-                <div class="schema-preview-message">Select a document and schema to inspect field layout.</div>
+                <div class="schema-preview-message">Select a schema to inspect field layout.</div>
             </div>
         </section>
 
@@ -45,22 +44,20 @@
 
         <section class="panel crud">
             <div>
-                <h2>Document CRUD</h2>
+                <h2>Schema CRUD</h2>
                 <form id="document-form">
-                    <label for="document-name">Document Name</label>
+                    <label for="document-name">Schema Name</label>
                     <input id="document-name" type="text" placeholder="inventory" />
-                    <label for="document-body">SCRT Document</label>
+                    <label for="document-body">Schema Definition</label>
                     <textarea id="document-body" placeholder="@schema:Example&#10;@field ID uint64 serial"></textarea>
                     <div class="actions">
-                        <button type="submit">Save Document</button>
+                        <button type="submit">Save Schema</button>
                     </div>
                 </form>
             </div>
             <div>
                 <h2>Record CRUD</h2>
                 <form id="record-form">
-                    <label for="record-document">Document</label>
-                    <input id="record-document" type="text" placeholder="message" />
                     <label for="record-schema">Schema</label>
                     <input id="record-schema" type="text" placeholder="Message" />
                     <label for="record-text">SCRT Rows</label>

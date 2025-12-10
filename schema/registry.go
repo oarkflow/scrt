@@ -3,9 +3,11 @@ package schema
 import (
 	"bytes"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,12 +20,12 @@ type DocumentRegistry struct {
 }
 
 type registryDocument struct {
-	name     string
-	doc      *Document
-	raw      []byte
-	source   string
-	updated  time.Time
-	payloads map[string][]byte
+	name    string
+	doc     *Document
+	raw     []byte
+	source  string
+	updated time.Time
+	payload []byte
 }
 
 // DocumentSummary describes a stored SCRT document.
@@ -59,29 +61,40 @@ func (r *DocumentRegistry) LoadFile(name, path string) (*Document, error) {
 
 // Upsert parses raw SCRT DSL bytes and stores/overwrites the document.
 func (r *DocumentRegistry) Upsert(name string, raw []byte, source string, updatedAt time.Time) (*Document, error) {
-	if name == "" {
-		return nil, fmt.Errorf("document name cannot be empty")
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("schema body cannot be empty")
 	}
 	doc, err := Parse(bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
-	doc.Source = source
+	schemaName, err := extractSingleSchemaName(doc)
+	if err != nil {
+		return nil, err
+	}
+	if name != "" && !strings.EqualFold(name, schemaName) {
+		return nil, fmt.Errorf("schema name mismatch: DSL defines %q but request targeted %q", schemaName, name)
+	}
+	if name == "" {
+		name = schemaName
+	}
+	// Re-map document schemas so only the canonical name exists in the map.
+	normalized := ensureSingleEntryDocument(doc, schemaName)
+	normalized.Source = source
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
 	entry := &registryDocument{
-		name:     name,
-		doc:      doc,
-		raw:      append([]byte(nil), raw...),
-		source:   source,
-		updated:  updatedAt,
-		payloads: make(map[string][]byte),
+		name:    schemaName,
+		doc:     normalized,
+		raw:     append([]byte(nil), raw...),
+		source:  source,
+		updated: updatedAt,
 	}
 	r.mu.Lock()
-	r.docs[name] = entry
+	r.docs[schemaName] = entry
 	r.mu.Unlock()
-	return doc, nil
+	return normalized, nil
 }
 
 // Snapshot returns the parsed document, raw DSL, and timestamp for a document name.
@@ -114,61 +127,40 @@ func (r *DocumentRegistry) List() []DocumentSummary {
 }
 
 // Payload returns a copy of the stored payload bytes for a schema.
-func (r *DocumentRegistry) Payload(docName, schemaName string) ([]byte, bool) {
+func (r *DocumentRegistry) Payload(schemaName string) ([]byte, bool) {
 	r.mu.RLock()
-	entry, ok := r.docs[docName]
-	if !ok {
-		r.mu.RUnlock()
+	entry, ok := r.docs[schemaName]
+	r.mu.RUnlock()
+	if !ok || entry.payload == nil {
 		return nil, false
 	}
-	data, ok := entry.payloads[schemaName]
-	r.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	return append([]byte(nil), data...), true
+	return append([]byte(nil), entry.payload...), true
 }
 
-// Payloads returns a shallow copy of all payloads for a document.
-func (r *DocumentRegistry) Payloads(docName string) map[string][]byte {
-	r.mu.RLock()
-	entry, ok := r.docs[docName]
-	if !ok {
-		r.mu.RUnlock()
-		return nil
-	}
-	clone := make(map[string][]byte, len(entry.payloads))
-	for name, data := range entry.payloads {
-		clone[name] = append([]byte(nil), data...)
-	}
-	r.mu.RUnlock()
-	return clone
-}
-
-// SetPayload saves/overwrites the payload bytes for a schema inside a document.
-func (r *DocumentRegistry) SetPayload(docName, schemaName string, data []byte) error {
+// SetPayload saves/overwrites the payload bytes for a schema.
+func (r *DocumentRegistry) SetPayload(schemaName string, data []byte) error {
 	if schemaName == "" {
 		return fmt.Errorf("schema name cannot be empty")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry, ok := r.docs[docName]
+	entry, ok := r.docs[schemaName]
 	if !ok {
 		return os.ErrNotExist
 	}
-	entry.payloads[schemaName] = append([]byte(nil), data...)
+	entry.payload = append([]byte(nil), data...)
 	return nil
 }
 
-// DeleteDocument removes a document from the registry.
-func (r *DocumentRegistry) DeleteDocument(name string) {
+// DeleteSchema removes a schema from the registry.
+func (r *DocumentRegistry) DeleteSchema(name string) {
 	r.mu.Lock()
 	delete(r.docs, name)
 	r.mu.Unlock()
 }
 
-// HasDocument returns true if a named document exists.
-func (r *DocumentRegistry) HasDocument(name string) bool {
+// HasSchema returns true if a named schema exists.
+func (r *DocumentRegistry) HasSchema(name string) bool {
 	r.mu.RLock()
 	_, ok := r.docs[name]
 	r.mu.RUnlock()
@@ -185,4 +177,61 @@ func (r *DocumentRegistry) CopyDSL(name string, w io.Writer) error {
 	}
 	_, err := w.Write(entry.raw)
 	return err
+}
+
+func documentFingerprint(doc *Document) uint64 {
+	if doc == nil {
+		return 0
+	}
+	names := make([]string, 0, len(doc.Schemas))
+	for name := range doc.Schemas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	hasher := fnv.New64a()
+	for _, name := range names {
+		schema := doc.Schemas[name]
+		if schema == nil {
+			continue
+		}
+		_, _ = hasher.Write([]byte(name))
+		_, _ = hasher.Write([]byte{':'})
+		fp := schema.Fingerprint()
+		buf := [8]byte{}
+		for i := 0; i < 8; i++ {
+			buf[i] = byte(fp >> (8 * i))
+		}
+		_, _ = hasher.Write(buf[:])
+		_, _ = hasher.Write([]byte{'|'})
+	}
+	return hasher.Sum64()
+}
+
+func extractSingleSchemaName(doc *Document) (string, error) {
+	if doc == nil || len(doc.Schemas) == 0 {
+		return "", fmt.Errorf("schema documents must declare at least one @schema block")
+	}
+	if len(doc.Schemas) > 1 {
+		return "", fmt.Errorf("schema documents must declare exactly one @schema block (found %d)", len(doc.Schemas))
+	}
+	for name := range doc.Schemas {
+		return name, nil
+	}
+	return "", fmt.Errorf("schema name missing")
+}
+
+func ensureSingleEntryDocument(doc *Document, schemaName string) *Document {
+	if doc == nil {
+		return nil
+	}
+	schema := doc.Schemas[schemaName]
+	data := make(map[string][]map[string]interface{})
+	if rows, ok := doc.Data[schemaName]; ok {
+		data[schemaName] = rows
+	}
+	return &Document{
+		Schemas: map[string]*Schema{schemaName: schema},
+		Data:    data,
+		Source:  doc.Source,
+	}
 }

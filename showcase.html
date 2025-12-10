@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SCRT Example Showcase</title>
+    <link rel="stylesheet" href="/style.css" />
+</head>
+
+<body class="showcase">
+    <header class="hero">
+        <div>
+            <p class="subtitle">Hands-on demo</p>
+            <h1>SCRT Binary CRUD Showcase</h1>
+            <p>Run the complete schema + payload workflow without touching JSON. The runner below stores the DSL,
+                uploads rows, downloads the bundle, and renders the decoded data directly in your browser.</p>
+        </div>
+        <nav>
+            <a href="/index.html">Back to Schema Console</a>
+            <a href="https://github.com/oarkflow/scrt" target="_blank" rel="noreferrer">Project Docs</a>
+        </nav>
+    </header>
+
+    <main class="showcase-grid">
+        <section class="storyboard">
+            <h2>What Happens</h2>
+            <ol>
+                <li>Push the Message DSL to the `/schemas/{name}` endpoint.</li>
+                <li>Marshal a few rows locally and upload them to `/records/{schema}` as binary SCRT.</li>
+                <li>Download the compact bundle, decode it via the TS runtime, and inspect each row.</li>
+                <li>Optionally delete the temporary schema so the demo stays reversible.</li>
+            </ol>
+        </section>
+        <section class="console-panel">
+            <h2>Live Runner</h2>
+            <form id="demo-form">
+                <div>
+                    <label for="demo-server">Server URL</label>
+                    <input id="demo-server" type="text" value="http://localhost:8080" />
+                </div>
+                <div>
+                    <label for="demo-schema">Schema Name</label>
+                    <input id="demo-schema" type="text" value="Message" />
+                </div>
+                <div>
+                    <label for="demo-dsl">Schema DSL</label>
+                    <textarea id="demo-dsl" readonly>@schema:Message
+@field MsgID uint64 auto_increment
+@field User  uint64
+@field Text  string
+@field Lang  string default "en"
+@field CreatedAt timestamp
+
+@Message
+1, 42, "hello", "en", "2025-01-01T12:00:00Z"
+2, 7, "hola", "es", "2025-01-02T08:45:00Z"
+</textarea>
+                </div>
+                <div>
+                    <label for="demo-records">Generated Rows (read-only)</label>
+                    <textarea id="demo-records" readonly>[{
+  "MsgID": 1,
+  "User": 42,
+  "Text": "hello",
+  "Lang": "en",
+  "CreatedAt": "2025-01-01T12:00:00Z"
+}, {
+  "MsgID": 2,
+  "User": 7,
+  "Text": "hola",
+  "Lang": "es",
+  "CreatedAt": "2025-01-02T08:45:00Z"
+}]
+</textarea>
+                </div>
+                <div class="actions">
+                    <button type="submit">Run Binary Example</button>
+                    <button type="button" id="demo-reset">Delete Schema</button>
+                </div>
+            </form>
+            <div class="status-log" id="demo-log">Idle</div>
+            <ul class="result-list" id="demo-results"></ul>
+        </section>
+    </main>
+
+    <script type="module" src="/src/showcase.ts"></script>
+</body>
+
+</html>

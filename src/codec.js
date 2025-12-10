@@ -1,31 +1,18 @@
-import { ByteBuffer, bufferToUint8Array, createBuffer, pushBytes, writeUvarint } from "./binary";
+import { bufferToUint8Array, createBuffer, pushBytes, writeUvarint } from "./binary";
 import { PageBuilder } from "./page";
-import { Field, FieldKind, Schema } from "./schema";
+import { FieldKind } from "./schema";
 import { readUvarint, readVarint } from "./binary";
-
 const MAGIC = "SCRT";
 const VERSION = 2;
 const textDecoder = new TextDecoder();
-
-export interface CodecValue {
-    uint?: bigint;
-    int?: bigint;
-    float?: number;
-    str?: string;
-    bytes?: Uint8Array;
-    bool?: boolean;
-    set: boolean;
-    borrowed?: boolean;
-}
-
 export class Row {
-    private readonly values: CodecValue[];
-
-    constructor(public readonly schema: Schema) {
+    schema;
+    values;
+    constructor(schema) {
+        this.schema = schema;
         this.values = new Array(schema.fields.length).fill(null).map(() => ({ set: false }));
     }
-
-    reset(): void {
+    reset() {
         for (const value of this.values) {
             value.set = false;
             value.uint = undefined;
@@ -37,55 +24,44 @@ export class Row {
             value.borrowed = undefined;
         }
     }
-
-    setByIndex(idx: number, value: CodecValue): void {
+    setByIndex(idx, value) {
         this.values[idx] = { ...value, set: true };
     }
-
-    valuesSlice(): CodecValue[] {
+    valuesSlice() {
         return this.values;
     }
-
-    fieldIndex(name: string): number {
+    fieldIndex(name) {
         return this.schema.fieldIndexByName(name);
     }
-
-    setValue(field: string, value: CodecValue): void {
+    setValue(field, value) {
         this.setByIndex(this.fieldIndex(field), value);
     }
-
-    setUint(field: string, value: bigint | number): void {
+    setUint(field, value) {
         const slot = this.claimSlot(this.fieldIndex(field));
         slot.uint = BigInt(value);
     }
-
-    setInt(field: string, value: bigint | number): void {
+    setInt(field, value) {
         const slot = this.claimSlot(this.fieldIndex(field));
         slot.int = BigInt(value);
     }
-
-    setFloat(field: string, value: number): void {
+    setFloat(field, value) {
         const slot = this.claimSlot(this.fieldIndex(field));
         slot.float = value;
     }
-
-    setBool(field: string, value: boolean): void {
+    setBool(field, value) {
         const slot = this.claimSlot(this.fieldIndex(field));
         slot.bool = value;
     }
-
-    setString(field: string, value: string): void {
+    setString(field, value) {
         const slot = this.claimSlot(this.fieldIndex(field));
         slot.str = value;
     }
-
-    setBytes(field: string, value: Uint8Array): void {
+    setBytes(field, value) {
         const slot = this.claimSlot(this.fieldIndex(field));
         slot.bytes = cloneBytes(value);
     }
-
-    private claimSlot(idx: number): CodecValue {
-        const slot = this.values[idx]!;
+    claimSlot(idx) {
+        const slot = this.values[idx];
         slot.set = true;
         slot.uint = undefined;
         slot.int = undefined;
@@ -97,24 +73,23 @@ export class Row {
         return slot;
     }
 }
-
 export class Writer {
-    private readonly builder: PageBuilder;
-    private readonly output: ByteBuffer = createBuffer();
-    private headerWritten = false;
-
-    constructor(private readonly schema: Schema, rowsPerPage = 1024) {
+    schema;
+    builder;
+    output = createBuffer();
+    headerWritten = false;
+    constructor(schema, rowsPerPage = 1024) {
+        this.schema = schema;
         this.builder = new PageBuilder(schema, rowsPerPage);
     }
-
-    writeRow(row: Row): void {
+    writeRow(row) {
         if (row.schema !== this.schema) {
             throw new Error("scrt: schema mismatch for row");
         }
         this.ensureHeader();
         const values = row.valuesSlice();
         this.schema.fields.forEach((field, idx) => {
-            const value = values[idx]!;
+            const value = values[idx];
             if (!value.set) {
                 this.builder.recordPresence(idx, false);
                 return;
@@ -154,13 +129,11 @@ export class Writer {
             this.flushPage();
         }
     }
-
-    finish(): Uint8Array {
+    finish() {
         this.flushPage();
         return bufferToUint8Array(this.output);
     }
-
-    private ensureHeader(): void {
+    ensureHeader() {
         if (this.headerWritten) {
             return;
         }
@@ -178,8 +151,7 @@ export class Writer {
         pushBytes(this.output, header);
         this.headerWritten = true;
     }
-
-    private flushPage(): void {
+    flushPage() {
         if (this.builder.rowCount() === 0) {
             return;
         }
@@ -192,29 +164,11 @@ export class Writer {
         this.builder.reset();
     }
 }
-
-interface ReaderOptions {
-    zeroCopyBytes?: boolean;
-}
-
-interface DecodedColumn {
-    kind: FieldKind;
-    rowIndexes: number[];
-    uints: bigint[];
-    stringTable: string[];
-    stringIndexes: number[];
-    bools: boolean[];
-    ints: bigint[];
-    floats: number[];
-    bytes: Uint8Array[];
-}
-
 class DecodedPage {
     rows = 0;
     cursor = 0;
-    columns: DecodedColumn[];
-
-    constructor(fieldCount: number) {
+    columns;
+    constructor(fieldCount) {
         this.columns = new Array(fieldCount).fill(null).map(() => ({
             kind: FieldKind.Invalid,
             rowIndexes: [],
@@ -228,17 +182,20 @@ class DecodedPage {
         }));
     }
 }
-
 export class Reader {
-    private readonly state: DecodedPage;
-    private offset = 0;
-    private headerRead = false;
-
-    constructor(private readonly data: Uint8Array, private readonly schema: Schema, private readonly options: ReaderOptions = {}) {
+    data;
+    schema;
+    options;
+    state;
+    offset = 0;
+    headerRead = false;
+    constructor(data, schema, options = {}) {
+        this.data = data;
+        this.schema = schema;
+        this.options = options;
         this.state = new DecodedPage(schema.fields.length);
     }
-
-    readRow(row: Row): boolean {
+    readRow(row) {
         if (!this.headerRead && !this.consumeHeader()) {
             return false;
         }
@@ -250,9 +207,9 @@ export class Reader {
         const rowIdx = this.state.cursor;
         const values = row.valuesSlice();
         for (let fieldIdx = 0; fieldIdx < this.schema.fields.length; fieldIdx += 1) {
-            const field = this.schema.fields[fieldIdx]!;
-            const column = this.state.columns[fieldIdx]!;
-            const valueSlot = values[fieldIdx]!;
+            const field = this.schema.fields[fieldIdx];
+            const column = this.state.columns[fieldIdx];
+            const valueSlot = values[fieldIdx];
             const valueIdx = column.rowIndexes[rowIdx] ?? -1;
             if (valueIdx < 0) {
                 assignDefaultValue(field, valueSlot);
@@ -292,8 +249,7 @@ export class Reader {
         this.state.cursor += 1;
         return true;
     }
-
-    private consumeHeader(): boolean {
+    consumeHeader() {
         if (this.data.length < MAGIC.length + 1 + 8) {
             return false;
         }
@@ -301,14 +257,14 @@ export class Reader {
         if (magic !== MAGIC) {
             throw new Error("scrt: invalid stream header");
         }
-        const version = this.data[MAGIC.length]!;
+        const version = this.data[MAGIC.length];
         if (version !== VERSION) {
             throw new Error(`scrt: unsupported version ${version}`);
         }
         const fpBytes = this.data.subarray(MAGIC.length + 1, MAGIC.length + 9);
         let fp = 0n;
         for (let i = 7; i >= 0; i -= 1) {
-            fp = (fp << 8n) | BigInt(fpBytes[i]!);
+            fp = (fp << 8n) | BigInt(fpBytes[i]);
         }
         if (fp !== this.schema.fingerprint()) {
             throw new Error("scrt: schema fingerprint mismatch");
@@ -317,8 +273,7 @@ export class Reader {
         this.headerRead = true;
         return true;
     }
-
-    private loadPage(): boolean {
+    loadPage() {
         if (this.offset >= this.data.length) {
             return false;
         }
@@ -333,8 +288,7 @@ export class Reader {
         this.decodePage(raw);
         return true;
     }
-
-    private decodePage(raw: Uint8Array): void {
+    decodePage(raw) {
         let cursor = 0;
         const { value: rows, bytesRead: rowsRead } = readUvarint(raw, cursor);
         cursor += rowsRead;
@@ -351,7 +305,7 @@ export class Reader {
             const { value: fieldIdxBig, bytesRead: fieldIdxRead } = readUvarint(raw, cursor);
             cursor += fieldIdxRead;
             const fieldIdx = Number(fieldIdxBig);
-            const kind = raw[cursor]! as FieldKind;
+            const kind = raw[cursor];
             cursor += 1;
             const { value: payloadLen, bytesRead: payloadLenRead } = readUvarint(raw, cursor);
             cursor += payloadLenRead;
@@ -360,9 +314,8 @@ export class Reader {
             this.decodeColumn(fieldIdx, kind, payload, rowCount);
         }
     }
-
-    private decodeColumn(idx: number, kind: FieldKind, payload: Uint8Array, rows: number): void {
-        const column = this.state.columns[idx]!;
+    decodeColumn(idx, kind, payload, rows) {
+        const column = this.state.columns[idx];
         column.kind = kind;
         const presence = decodePresence(payload, rows);
         column.rowIndexes = presence.indexes;
@@ -410,8 +363,7 @@ export class Reader {
         }
     }
 }
-
-function decodePresence(data: Uint8Array, rows: number): { indexes: number[]; setCount: number; bytesRead: number } {
+function decodePresence(data, rows) {
     const { value: byteLenBig, bytesRead } = readUvarint(data, 0);
     const byteLen = Number(byteLenBig);
     let cursor = bytesRead;
@@ -421,7 +373,7 @@ function decodePresence(data: Uint8Array, rows: number): { indexes: number[]; se
         const byteIdx = Math.floor(row / 8);
         const bit = row % 8;
         if (byteIdx < byteLen) {
-            const present = (data[cursor + byteIdx]! & (1 << bit)) !== 0;
+            const present = (data[cursor + byteIdx] & (1 << bit)) !== 0;
             if (present) {
                 indexes[row] = setCount;
                 setCount += 1;
@@ -431,8 +383,7 @@ function decodePresence(data: Uint8Array, rows: number): { indexes: number[]; se
     cursor += byteLen;
     return { indexes, setCount, bytesRead: cursor };
 }
-
-function decodeUintColumn(data: Uint8Array, expected: number): { values: bigint[] } {
+function decodeUintColumn(data, expected) {
     let cursor = 0;
     const { value: header, bytesRead } = readUvarint(data, cursor);
     cursor += bytesRead;
@@ -441,7 +392,7 @@ function decodeUintColumn(data: Uint8Array, expected: number): { values: bigint[
     if (count !== expected) {
         throw new Error("scrt: uint column count mismatch");
     }
-    const values = new Array<bigint>(count).fill(0n);
+    const values = new Array(count).fill(0n);
     if (count === 0) {
         return { values };
     }
@@ -451,20 +402,20 @@ function decodeUintColumn(data: Uint8Array, expected: number): { values: bigint[
             cursor += result.bytesRead;
             values[i] = result.value;
         }
-    } else {
+    }
+    else {
         let result = readUvarint(data, cursor);
         cursor += result.bytesRead;
         values[0] = result.value;
         for (let i = 1; i < count; i += 1) {
             result = readUvarint(data, cursor);
             cursor += result.bytesRead;
-            values[i] = values[i - 1]! + result.value;
+            values[i] = values[i - 1] + result.value;
         }
     }
     return { values };
 }
-
-function decodeIntColumn(data: Uint8Array, expected: number): { values: bigint[] } {
+function decodeIntColumn(data, expected) {
     let cursor = 0;
     const { value: header, bytesRead } = readUvarint(data, cursor);
     cursor += bytesRead;
@@ -473,7 +424,7 @@ function decodeIntColumn(data: Uint8Array, expected: number): { values: bigint[]
     if (count !== expected) {
         throw new Error("scrt: int column count mismatch");
     }
-    const values = new Array<bigint>(count).fill(0n);
+    const values = new Array(count).fill(0n);
     if (count === 0) {
         return { values };
     }
@@ -483,20 +434,20 @@ function decodeIntColumn(data: Uint8Array, expected: number): { values: bigint[]
             cursor += result.bytesRead;
             values[i] = result.value;
         }
-    } else {
+    }
+    else {
         let result = readVarint(data, cursor);
         cursor += result.bytesRead;
         values[0] = result.value;
         for (let i = 1; i < count; i += 1) {
             result = readVarint(data, cursor);
             cursor += result.bytesRead;
-            values[i] = values[i - 1]! + result.value;
+            values[i] = values[i - 1] + result.value;
         }
     }
     return { values };
 }
-
-function decodeFloatColumn(data: Uint8Array, expected: number): { values: number[] } {
+function decodeFloatColumn(data, expected) {
     let cursor = 0;
     const { value: countBig, bytesRead } = readUvarint(data, cursor);
     cursor += bytesRead;
@@ -504,7 +455,7 @@ function decodeFloatColumn(data: Uint8Array, expected: number): { values: number
     if (count !== expected) {
         throw new Error("scrt: float column count mismatch");
     }
-    const values = new Array<number>(count).fill(0);
+    const values = new Array(count).fill(0);
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     for (let i = 0; i < count; i += 1) {
         if (cursor + 8 > data.length) {
@@ -515,8 +466,7 @@ function decodeFloatColumn(data: Uint8Array, expected: number): { values: number
     }
     return { values };
 }
-
-function decodeBoolColumn(data: Uint8Array, expected: number): { values: boolean[] } {
+function decodeBoolColumn(data, expected) {
     let cursor = 0;
     const { value: countBig, bytesRead } = readUvarint(data, cursor);
     cursor += bytesRead;
@@ -524,19 +474,18 @@ function decodeBoolColumn(data: Uint8Array, expected: number): { values: boolean
     if (count !== expected) {
         throw new Error("scrt: bool column count mismatch");
     }
-    const values = new Array<boolean>(count);
+    const values = new Array(count);
     for (let i = 0; i < count; i += 1) {
-        values[i] = data[cursor + i]! !== 0;
+        values[i] = data[cursor + i] !== 0;
     }
     return { values };
 }
-
-function decodeStringColumn(data: Uint8Array, expected: number): { table: string[]; indexes: number[] } {
+function decodeStringColumn(data, expected) {
     let cursor = 0;
     const { value: dictLenBig, bytesRead } = readUvarint(data, cursor);
     cursor += bytesRead;
     const dictLen = Number(dictLenBig);
-    const table = new Array<string>(dictLen);
+    const table = new Array(dictLen);
     for (let i = 0; i < dictLen; i += 1) {
         const lengthInfo = readUvarint(data, cursor);
         cursor += lengthInfo.bytesRead;
@@ -551,7 +500,7 @@ function decodeStringColumn(data: Uint8Array, expected: number): { table: string
     if (indexLen !== expected) {
         throw new Error("scrt: string index count mismatch");
     }
-    const indexes = new Array<number>(indexLen);
+    const indexes = new Array(indexLen);
     for (let i = 0; i < indexLen; i += 1) {
         const idxInfo = readUvarint(data, cursor);
         cursor += idxInfo.bytesRead;
@@ -559,8 +508,7 @@ function decodeStringColumn(data: Uint8Array, expected: number): { table: string
     }
     return { table, indexes };
 }
-
-function decodeBytesColumn(data: Uint8Array, expected: number, zeroCopy: boolean): { values: Uint8Array[] } {
+function decodeBytesColumn(data, expected, zeroCopy) {
     let cursor = 0;
     const { value: countBig, bytesRead } = readUvarint(data, cursor);
     cursor += bytesRead;
@@ -568,7 +516,7 @@ function decodeBytesColumn(data: Uint8Array, expected: number, zeroCopy: boolean
     if (count !== expected) {
         throw new Error("scrt: bytes column count mismatch");
     }
-    const values = new Array<Uint8Array>(count);
+    const values = new Array(count);
     for (let i = 0; i < count; i += 1) {
         const lengthInfo = readUvarint(data, cursor);
         cursor += lengthInfo.bytesRead;
@@ -579,14 +527,12 @@ function decodeBytesColumn(data: Uint8Array, expected: number, zeroCopy: boolean
     }
     return { values };
 }
-
-function cloneBytes(src: Uint8Array): Uint8Array {
+function cloneBytes(src) {
     const copy = new Uint8Array(src.length);
     copy.set(src);
     return copy;
 }
-
-function assignDefaultValue(field: Field, slot: CodecValue): void {
+function assignDefaultValue(field, slot) {
     slot.set = false;
     const def = field.defaultValue;
     if (!def) {

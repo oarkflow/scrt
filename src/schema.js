@@ -1,36 +1,40 @@
 import { encodeDate, encodeInstant, formatTimestampTZ, parseDate, parseDateTime, parseDuration, parseTimestamp, parseTimestampTZ } from "./temporal";
-
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
-
-export enum FieldKind {
-    Invalid = 0,
-    Uint64 = 1,
-    String = 2,
-    Ref = 3,
-    Bool = 4,
-    Int64 = 5,
-    Float64 = 6,
-    Bytes = 7,
-    Date = 8,
-    DateTime = 9,
-    Timestamp = 10,
-    TimestampTZ = 11,
-    Duration = 12,
-}
-
+export var FieldKind;
+(function (FieldKind) {
+    FieldKind[FieldKind["Invalid"] = 0] = "Invalid";
+    FieldKind[FieldKind["Uint64"] = 1] = "Uint64";
+    FieldKind[FieldKind["String"] = 2] = "String";
+    FieldKind[FieldKind["Ref"] = 3] = "Ref";
+    FieldKind[FieldKind["Bool"] = 4] = "Bool";
+    FieldKind[FieldKind["Int64"] = 5] = "Int64";
+    FieldKind[FieldKind["Float64"] = 6] = "Float64";
+    FieldKind[FieldKind["Bytes"] = 7] = "Bytes";
+    FieldKind[FieldKind["Date"] = 8] = "Date";
+    FieldKind[FieldKind["DateTime"] = 9] = "DateTime";
+    FieldKind[FieldKind["Timestamp"] = 10] = "Timestamp";
+    FieldKind[FieldKind["TimestampTZ"] = 11] = "TimestampTZ";
+    FieldKind[FieldKind["Duration"] = 12] = "Duration";
+})(FieldKind || (FieldKind = {}));
 export class DefaultValue {
-    constructor(
-        public kind: FieldKind,
-        public boolValue?: boolean,
-        public intValue?: bigint,
-        public uintValue?: bigint,
-        public floatValue?: number,
-        public stringValue?: string,
-        public bytesValue?: Uint8Array,
-    ) { }
-
-    hashKey(): string {
+    kind;
+    boolValue;
+    intValue;
+    uintValue;
+    floatValue;
+    stringValue;
+    bytesValue;
+    constructor(kind, boolValue, intValue, uintValue, floatValue, stringValue, bytesValue) {
+        this.kind = kind;
+        this.boolValue = boolValue;
+        this.intValue = intValue;
+        this.uintValue = uintValue;
+        this.floatValue = floatValue;
+        this.stringValue = stringValue;
+        this.bytesValue = bytesValue;
+    }
+    hashKey() {
         switch (this.kind) {
             case FieldKind.Bool:
                 return `bool:${this.boolValue ? 1 : 0}`;
@@ -57,46 +61,52 @@ export class DefaultValue {
         }
     }
 }
-
 export class Field {
-    public resolvedKind: FieldKind = FieldKind.Invalid;
-    public pendingDefault = "";
-
-    constructor(
-        public readonly name: string,
-        public readonly kind: FieldKind,
-        public readonly rawType: string,
-        public targetSchema = "",
-        public targetField = "",
-        public autoIncrement = false,
-        public attributes: string[] = [],
-        public defaultValue?: DefaultValue,
-    ) { }
-
-    valueKind(): FieldKind {
+    name;
+    kind;
+    rawType;
+    targetSchema;
+    targetField;
+    autoIncrement;
+    attributes;
+    defaultValue;
+    resolvedKind = FieldKind.Invalid;
+    pendingDefault = "";
+    constructor(name, kind, rawType, targetSchema = "", targetField = "", autoIncrement = false, attributes = [], defaultValue) {
+        this.name = name;
+        this.kind = kind;
+        this.rawType = rawType;
+        this.targetSchema = targetSchema;
+        this.targetField = targetField;
+        this.autoIncrement = autoIncrement;
+        this.attributes = attributes;
+        this.defaultValue = defaultValue;
+    }
+    valueKind() {
         if (this.kind === FieldKind.Ref) {
             return this.resolvedKind === FieldKind.Invalid ? FieldKind.Uint64 : this.resolvedKind;
         }
         return this.resolvedKind === FieldKind.Invalid ? this.kind : this.resolvedKind;
     }
-
-    isReference(): boolean {
+    isReference() {
         return this.kind === FieldKind.Ref && !!this.targetSchema && !!this.targetField;
     }
 }
-
 export class Schema {
-    private fingerprintCache?: bigint;
-    private fieldIndex?: Map<string, number>;
-
-    constructor(public readonly name: string, public readonly fields: Field[]) { }
-
-    fingerprint(): bigint {
+    name;
+    fields;
+    fingerprintCache;
+    fieldIndex;
+    constructor(name, fields) {
+        this.name = name;
+        this.fields = fields;
+    }
+    fingerprint() {
         if (this.fingerprintCache !== undefined) {
             return this.fingerprintCache;
         }
         let hash = FNV_OFFSET;
-        const write = (str: string): void => {
+        const write = (str) => {
             for (let i = 0; i < str.length; i += 1) {
                 hash ^= BigInt(str.charCodeAt(i));
                 hash = BigInt.asUintN(64, hash * FNV_PRIME);
@@ -129,11 +139,10 @@ export class Schema {
         this.fingerprintCache = BigInt.asUintN(64, hash);
         return this.fingerprintCache;
     }
-
-    fieldIndexByName(name: string): number {
+    fieldIndexByName(name) {
         if (!this.fieldIndex) {
             this.fieldIndex = new Map();
-            this.fields.forEach((field, idx) => this.fieldIndex!.set(field.name, idx));
+            this.fields.forEach((field, idx) => this.fieldIndex.set(field.name, idx));
         }
         const idx = this.fieldIndex.get(name);
         if (idx === undefined) {
@@ -141,49 +150,44 @@ export class Schema {
         }
         return idx;
     }
-
-    tryFieldIndex(name: string): number | undefined {
+    tryFieldIndex(name) {
         if (!this.fieldIndex) {
             this.fieldIndex = new Map();
-            this.fields.forEach((field, idx) => this.fieldIndex!.set(field.name, idx));
+            this.fields.forEach((field, idx) => this.fieldIndex.set(field.name, idx));
         }
         return this.fieldIndex.get(name);
     }
 }
-
 export class Document {
-    constructor(
-        public readonly schemas: Map<string, Schema>,
-        public readonly data: Map<string, Record<string, unknown>[]>,
-        public source?: string,
-    ) { }
-
-    schema(name: string): Schema | undefined {
+    schemas;
+    data;
+    source;
+    constructor(schemas, data, source) {
+        this.schemas = schemas;
+        this.data = data;
+        this.source = source;
+    }
+    schema(name) {
         return this.schemas.get(name);
     }
-
-    records(name: string): Record<string, unknown>[] | undefined {
+    records(name) {
         return this.data.get(name);
     }
-
-    finalize(): void {
+    finalize() {
         for (const schema of this.schemas.values()) {
             resolveSchemaKinds(this, schema);
         }
     }
 }
-
-export function parseSchema(text: string): Document {
+export function parseSchema(text) {
     const lines = text.split(/\r?\n/).map((line) => line.trim());
-    const schemas = new Map<string, Schema>();
-    const data = new Map<string, Record<string, unknown>[]>();
-
-    let current: Schema | undefined;
+    const schemas = new Map();
+    const data = new Map();
+    let current;
     let awaitingName = false;
     let currentData = "";
     let fieldBlock = false;
-
-    const finishCurrent = (): void => {
+    const finishCurrent = () => {
         if (!current) {
             return;
         }
@@ -193,8 +197,7 @@ export function parseSchema(text: string): Document {
         schemas.set(current.name, current);
         current = undefined;
     };
-
-    const startSchema = (name: string): void => {
+    const startSchema = (name) => {
         finishCurrent();
         fieldBlock = false;
         if (!name) {
@@ -202,7 +205,6 @@ export function parseSchema(text: string): Document {
         }
         current = new Schema(name, []);
     };
-
     for (const line of lines) {
         if (!line) {
             continue;
@@ -277,21 +279,18 @@ export function parseSchema(text: string): Document {
             continue;
         }
     }
-
     finishCurrent();
     const doc = new Document(schemas, data);
     doc.finalize();
     return doc;
 }
-
-function pushDataRow(store: Map<string, Record<string, unknown>[]>, schemaName: string, row: Record<string, unknown>): void {
+function pushDataRow(store, schemaName, row) {
     if (!store.has(schemaName)) {
         store.set(schemaName, []);
     }
-    store.get(schemaName)!.push(row);
+    store.get(schemaName).push(row);
 }
-
-function parseField(body: string): Field {
+function parseField(body) {
     const [name, typ, attrChunk] = splitFieldParts(body);
     const { kind, targetSchema, targetField } = interpretFieldType(typ);
     const field = new Field(name, kind, typ, targetSchema, targetField);
@@ -315,8 +314,7 @@ function parseField(body: string): Field {
     }
     return field;
 }
-
-function splitFieldParts(body: string): [string, string, string] {
+function splitFieldParts(body) {
     const trimmed = body.trim();
     const firstSep = trimmed.search(/[ \t]/);
     if (firstSep === -1) {
@@ -330,8 +328,7 @@ function splitFieldParts(body: string): [string, string, string] {
     }
     return [name, rest.slice(0, secondSep).trim(), rest.slice(secondSep + 1).trim()];
 }
-
-function interpretFieldType(raw: string): { kind: FieldKind; targetSchema: string; targetField: string } {
+function interpretFieldType(raw) {
     const typ = raw.toLowerCase();
     switch (true) {
         case typ === "uint64" || typ === "uint":
@@ -363,24 +360,26 @@ function interpretFieldType(raw: string): { kind: FieldKind; targetSchema: strin
             throw new Error(`scrt: unsupported field type ${raw}`);
     }
 }
-
-function splitFieldAttributes(attrChunk: string): string[] {
-    const attrs: string[] = [];
+function splitFieldAttributes(attrChunk) {
+    const attrs = [];
     let current = "";
-    let quote: string | null = null;
+    let quote = null;
     for (const ch of attrChunk) {
         if ((ch === '"' || ch === "'" || ch === "`") && quote === null) {
             quote = ch;
             current += ch;
-        } else if (quote && ch === quote) {
+        }
+        else if (quote && ch === quote) {
             quote = null;
             current += ch;
-        } else if (!quote && ch === ',') {
+        }
+        else if (!quote && ch === ',') {
             if (current.trim()) {
                 attrs.push(current.trim());
             }
             current = "";
-        } else {
+        }
+        else {
             current += ch;
         }
     }
@@ -389,8 +388,7 @@ function splitFieldAttributes(attrChunk: string): string[] {
     }
     return attrs;
 }
-
-function assignFieldDefault(field: Field, literalRaw: string): void {
+function assignFieldDefault(field, literalRaw) {
     const literal = literalRaw.trim();
     if (!literal) {
         return;
@@ -401,16 +399,14 @@ function assignFieldDefault(field: Field, literalRaw: string): void {
     }
     field.defaultValue = parseDefaultLiteral(field.kind, literal);
 }
-
-function extractDefaultLiteral(attr: string): string {
+function extractDefaultLiteral(attr) {
     const sepIdx = attr.indexOf("=") >= 0 ? attr.indexOf("=") : attr.indexOf(":");
     if (sepIdx === -1) {
         return attr;
     }
     return attr.slice(sepIdx + 1);
 }
-
-function parseDefaultLiteral(kind: FieldKind, literal: string): DefaultValue {
+function parseDefaultLiteral(kind, literal) {
     switch (kind) {
         case FieldKind.Bool:
             return new DefaultValue(kind, literal.toLowerCase() === "true" || literal === "1");
@@ -441,8 +437,7 @@ function parseDefaultLiteral(kind: FieldKind, literal: string): DefaultValue {
             throw new Error(`scrt: defaults not supported for kind ${kind}`);
     }
 }
-
-function parseStringLiteral(raw: string): string {
+function parseStringLiteral(raw) {
     const trimmed = raw.trim();
     if (!trimmed) {
         return "";
@@ -452,8 +447,7 @@ function parseStringLiteral(raw: string): string {
     }
     return trimmed;
 }
-
-function stripQuotes(raw: string): string {
+function stripQuotes(raw) {
     const trimmed = raw.trim();
     if (!trimmed) {
         return "";
@@ -463,8 +457,7 @@ function stripQuotes(raw: string): string {
     }
     return trimmed;
 }
-
-function parseBytesLiteral(raw: string): Uint8Array {
+function parseBytesLiteral(raw) {
     const trimmed = raw.trim();
     if (trimmed.startsWith("0x") || trimmed.startsWith("0X")) {
         const hex = trimmed.slice(2);
@@ -479,14 +472,13 @@ function parseBytesLiteral(raw: string): Uint8Array {
     }
     return new TextEncoder().encode(stripQuotes(trimmed));
 }
-
-function parseDataRow(line: string, schema: Schema): Record<string, unknown> {
-    const row: Record<string, unknown> = {};
+function parseDataRow(line, schema) {
+    const row = {};
     const tokens = line.split(',');
     let fieldIdx = 0;
     let remaining = countValueTokens(tokens);
-    const skipAuto = (): void => {
-        while (fieldIdx < schema.fields.length && schema.fields[fieldIdx]!.autoIncrement) {
+    const skipAuto = () => {
+        while (fieldIdx < schema.fields.length && schema.fields[fieldIdx].autoIncrement) {
             const nonAuto = countNonAuto(schema.fields, fieldIdx);
             if (remaining > nonAuto) {
                 return;
@@ -503,7 +495,7 @@ function parseDataRow(line: string, schema: Schema): Record<string, unknown> {
         if (trimmed.startsWith("@")) {
             const { index, value } = applyExplicitAssignment(schema, trimmed.slice(1));
             if (index >= 0) {
-                row[schema.fields[index]!.name] = value;
+                row[schema.fields[index].name] = value;
                 fieldIdx = Math.max(fieldIdx, index + 1);
             }
             continue;
@@ -512,15 +504,14 @@ function parseDataRow(line: string, schema: Schema): Record<string, unknown> {
         if (fieldIdx >= schema.fields.length) {
             throw new Error("scrt: too many values in row");
         }
-        const field = schema.fields[fieldIdx]!;
+        const field = schema.fields[fieldIdx];
         row[field.name] = parseValue(trimmed, field);
         fieldIdx += 1;
         remaining -= 1;
     }
     return row;
 }
-
-function countValueTokens(tokens: string[]): number {
+function countValueTokens(tokens) {
     return tokens.reduce((acc, token) => {
         const trimmed = token.trim();
         if (!trimmed || trimmed.startsWith("@")) {
@@ -529,18 +520,16 @@ function countValueTokens(tokens: string[]): number {
         return acc + 1;
     }, 0);
 }
-
-function countNonAuto(fields: Field[], start: number): number {
+function countNonAuto(fields, start) {
     let count = 0;
     for (let i = start; i < fields.length; i += 1) {
-        if (!fields[i]!.autoIncrement) {
+        if (!fields[i].autoIncrement) {
             count += 1;
         }
     }
     return count;
 }
-
-function applyExplicitAssignment(schema: Schema, expr: string): { index: number; value: unknown } {
+function applyExplicitAssignment(schema, expr) {
     const [fieldToken, rawValue] = expr.split("=", 2);
     if (!rawValue) {
         throw new Error(`scrt: invalid assignment ${expr}`);
@@ -550,20 +539,18 @@ function applyExplicitAssignment(schema: Schema, expr: string): { index: number;
     if (idx === undefined) {
         throw new Error(`scrt: field ${normalized} not found`);
     }
-    const field = schema.fields[idx]!;
+    const field = schema.fields[idx];
     return { index: idx, value: parseValue(rawValue.trim(), field) };
 }
-
-function normalizeAssignmentTarget(token: string): string {
+function normalizeAssignmentTarget(token) {
     const trimmed = token.trim();
     const parts = trimmed.split(":");
     if (parts.length >= 2) {
-        return parts[1]!;
+        return parts[1];
     }
-    return parts[0]!;
+    return parts[0];
 }
-
-function parseValue(raw: string, field: Field): unknown {
+function parseValue(raw, field) {
     const kind = field.valueKind();
     const trimmed = raw.trim();
     switch (kind) {
@@ -593,13 +580,11 @@ function parseValue(raw: string, field: Field): unknown {
             return trimmed;
     }
 }
-
-function resolveSchemaKinds(doc: Document, schema: Schema): void {
+function resolveSchemaKinds(doc, schema) {
     schema.fields.forEach((field, idx) => resolveFieldKind(doc, schema, idx, new Set()));
 }
-
-function resolveFieldKind(doc: Document, schema: Schema, idx: number, stack: Set<string>): FieldKind {
-    const field = schema.fields[idx]!;
+function resolveFieldKind(doc, schema, idx, stack) {
+    const field = schema.fields[idx];
     if (field.resolvedKind !== FieldKind.Invalid) {
         return field.resolvedKind;
     }
@@ -633,14 +618,13 @@ function resolveFieldKind(doc: Document, schema: Schema, idx: number, stack: Set
     }
     return resolved;
 }
-
-function bytesToBase64(bytes: Uint8Array): string {
+function bytesToBase64(bytes) {
     if (typeof Buffer !== "undefined") {
         return Buffer.from(bytes).toString("base64");
     }
     let binary = "";
     for (let i = 0; i < bytes.length; i += 1) {
-        binary += String.fromCharCode(bytes[i]!);
+        binary += String.fromCharCode(bytes[i]);
     }
     if (typeof btoa === "function") {
         return btoa(binary);

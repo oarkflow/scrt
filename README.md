@@ -1,25 +1,21 @@
 # SCRT: Schema-Compressed Record Transport
+```bash
+# install deps once
+npm install
 
-SCRT is an experimental binary transport format for structured data that targets:
+# run the Go SCRT server for schema + record endpoints
+go run ./cmd/scrt-server -addr :8080
 
-- near-zero heap allocations by relying on arena-backed buffers and reusable structs
-- deterministic schema-driven layouts with cached metadata
-- 90%+ smaller footprint than JSON on large datasets thanks to columnar compression and prefix dictionaries
-- a minimal, Go-native implementation that avoids the `encoding/json` package entirely
-
-## Format Overview
-
-A `.scrt` document consists of three logical segments written back-to-back:
-
-1. **Preamble** – a fixed magic number (`SCRT\u0001`), semantic version, and feature bits.
-2. **Schema Segment** – compiled representation of the `@schema` DSL. Each schema definition is hashed (X24 fingerprint) and stored once per file.
-3. **Payload Segment** – columnar pages (default 64KB) that store rows encoded as delta-compressed primitive columns ordered by schema.
-
-Within a schema:
-
-- Fields carry type, optional constraints, and auto-increment rules.
-- Refs are encoded as unsigned ints referencing the primary key of the target schema.
+# in another terminal start the Vite client (defaults to localhost:8080)
 - Strings live in a deduplicated dictionary for the current page and are referenced via varint handles.
+```
+
+The client lives under `src/` and pulls schema + payload data from
+`/bundle?schema=Message`. That endpoint emits a compact binary envelope
+(magic `SCB1`, version byte, registry fingerprint, unix-nano timestamp,
+u32-length schema DSL, u16-count index entries, optional payload section). No JSON
+parsing is required on either side, and the TypeScript helper reconstructs the
+schema directly from the bytes.
 
 ### Binary Encoding v2
 
@@ -35,15 +31,17 @@ The data section that follows each `@schema` block now has a more forgiving pars
 - **Explicit overrides use named assignments**. Prefix any cell with `@FieldName=` to override the generated value (e.g. `@MsgID=9001`), or to backfill a sparse column while leaving earlier auto-increment fields empty.
 - **Reference fields store raw target keys**. The legacy `@ref:Schema:Field=value` tokens have been removed; simply emit the referenced primary key and SCRT will validate it against the schema metadata.
 
+You can describe fields using either explicit `@field Name Type` lines or the older
+`fields:` block—both compile to the same structure.
+
 Example:
 
 ```text
 @schema:Message
-fields:
-  MsgID uint64 auto_increment
-  User  ref User.ID
-  Text  string
-  Lang  string default "en"
+@field MsgID uint64 auto_increment
+@field User  ref User.ID
+@field Text  string
+@field Lang  string default "en"
 
 @Message
 1001, "Hey there"             # MsgID auto-populates, Lang defaults to "en"
@@ -116,6 +114,174 @@ if err := scrt.Unmarshal(payload, msgSchema, &out); err != nil { panic(err) }
 
 See `examples/basic` for a runnable sample.
 
+## TypeScript / JavaScript Port
+
+The `src/` directory now ships a zero-dependency TypeScript implementation of
+the SCRT codec so browser and Node.js applications can swap JSON/CSV payloads
+for the same binary format produced by the Go libraries.
+
+```ts
+import { marshalRecords, parseSchema, streamDecodedRows, unmarshalRecords } from "@scrt/index";
+
+const dsl = await fs.promises.readFile("./data.scrt", "utf8");
+const doc = parseSchema(dsl);
+const messageSchema = doc.schema("Message");
+if (!messageSchema) throw new Error("schema missing");
+
+const payload = marshalRecords(messageSchema, [
+  { MsgID: 1n, User: 42n, Text: "hey", Lang: "en", CreatedAt: new Date() },
+  { MsgID: 2n, User: 1001n, Text: "hola", Lang: "es", CreatedAt: Date.now() },
+]);
+
+const decoded = unmarshalRecords(payload, messageSchema, {
+  numericMode: "auto",     // return JS numbers when safe, bigint otherwise
+  temporalMode: "date",    // emit Date objects ("string" yields RFC3339 text)
+  durationMode: "string",  // render Go-style 1h2m3s strings
+});
+
+for (const row of streamDecodedRows(payload, messageSchema, { objectFactory: () => new Map() })) {
+  console.log(row.get("Text"));
+}
+```
+
+Key features:
+
+- `marshalRecords(schema, source)` accepts plain objects, `Map<string, any>`, or
+  existing `Row` instances and emits a binary `Uint8Array` identical to the Go
+  encoder.
+- `unmarshalRecords` builds an array of objects (or maps via `objectFactory`).
+- `streamDecodedRows` exposes a generator for large payloads so data can be
+  processed incrementally without materialising every row.
+- Flexible decode options mirror Go’s high-level API: zero-copy bytes,
+  automatic bigint/number promotion, and configurable temporal/duration
+  rendering.
+
+All primitives (`Schema`, `Row`, `Writer`, `Reader`, temporal helpers, etc.) are
+re-exported via `src/index.ts` so applications can combine low-level and
+high-level APIs as needed.
+
+## Binary HTTP Server (No JSON)
+
+Run `go run ./cmd/scrt-server -addr :8080` to start a fully binary backend that
+never emits or accepts JSON. The process boots with an empty registry—upload
+schemas through the `/schemas` endpoint (or via the TypeScript helper)
+before pushing payloads. The server keeps SCRT schemas and payloads in memory
+and exposes the following routes:
+
+- `GET /schemas` → newline-delimited schema names (`text/plain`).
+- `POST /schemas/{name}` / `GET /schemas/{name}` / `DELETE ...` → raw SCRT
+  DSL text for CRUD without JSON envelopes.
+- `POST /records/{schema}` → persist SCRT binary payloads exactly as
+  produced by the Go/TypeScript codecs.
+- `GET /records/{schema}` → retrieve the stored SCRT stream.
+- `GET /bundle?schema=Name` → compact binary envelope (`SCB1`)
+  containing schema fingerprints, raw DSL, and the current payload.
+
+The Vite UI (`src/main.ts`) uses `fetch` with `arrayBuffer()` and the shared
+TypeScript codecs to manage schemas, upload SCRT payloads, and stream decoded
+rows—there are no JSON round-trips anywhere in the flow.
+
+The server now enables CORS by default so a Vite/JS client can interact directly
+from a browser at a different origin. Preflight requests (OPTIONS) are handled
+by the server and the allowed headers include Content-Type, Accept, and
+Authorization.
+
+## CRUD Walkthrough (Go Server + TypeScript Client)
+
+The Go server keeps schemas and row payloads fully in memory, so the simplest
+CRUD flow is: create a schema, push binary records, read them back (either as
+raw SCRT or via the bundle endpoint), then delete the schema when you are
+done.
+
+1. Start the server (it launches with no schemas, so you will upload one
+  in the next step):
+
+   ```bash
+  go run ./cmd/scrt-server -addr :8080
+   ```
+
+2. Point a TypeScript client at the running instance. The snippet below can run
+   under `tsx`/`ts-node` and mirrors what the frontend does without touching
+   JSON.
+
+   ```ts
+   import {
+     marshalRecords,
+     parseSchema,
+     ScrtHttpClient,
+     unmarshalRecords,
+   } from "./src";
+
+   const client = new ScrtHttpClient("http://localhost:8080");
+   const schemaName = "Message";
+   const schemaDsl = `@schema:Message
+   @field MsgID uint64 auto_increment
+   @field User  uint64
+   @field Text  string
+   @field Lang  string default "en"
+
+   @Message
+   1, 42, "hi"`;
+
+  // C: create or overwrite the schema on the server.
+  await client.saveSchema(schemaName, schemaDsl);
+
+  // R: round-trip the raw DSL or list schemas if you need confirmation.
+  const available = await client.listSchemas();
+  console.log("schemas", available);
+
+   // Marshal a pair of rows locally and upload them as the canonical payload.
+  const parsed = parseSchema(schemaDsl);
+  const messageSchema = parsed.schema(schemaName);
+   if (!messageSchema) throw new Error("schema missing");
+
+   const payload = marshalRecords(messageSchema, [
+     { MsgID: 1n, User: 42n, Text: "hi" },
+     { MsgID: 2n, User: 7n, Text: "hola", Lang: "es" },
+   ]);
+  await client.uploadRecords(schemaName, payload);
+
+   // R: fetch the binary rows back and decode them on the client side.
+  const stored = await client.fetchRecords(schemaName);
+   const decoded = unmarshalRecords(stored, messageSchema, { numericMode: "bigint" });
+   console.log(decoded);
+
+   // U: replace the payload with an updated set of rows (no JSON patches).
+   const updatedPayload = marshalRecords(messageSchema, [
+     ...decoded,
+     { MsgID: 3n, User: 999n, Text: "update" },
+   ]);
+  await client.uploadRecords(schemaName, updatedPayload);
+
+   // Optional: pull the compact bundle (schema text + payload) in one go.
+  const bundle = await client.fetchBundle(schemaName);
+   const bundleDoc = parseSchema(bundle.schemaText);
+   const bundleSchema = bundleDoc.schema(bundle.schemaName);
+   if (bundleSchema) {
+     console.log(unmarshalRecords(bundle.payload, bundleSchema));
+   }
+
+  // D: remove the schema (and its payload) when you are finished testing.
+  await client.deleteSchema(schemaName);
+   ```
+
+Every request in the flow above carries only SCRT DSL text or binary payloads,
+so the server and client stay JSON-free end to end. Uploading records always
+stores the most recent binary blob, which keeps updates deterministic while
+still supporting append/replace semantics at the application layer.
+
+## Publishing the TypeScript Bundle
+
+Use Vite’s library build to ship the shared codecs:
+
+```bash
+npm run bundle:ts
+```
+
+This produces ESM + CJS bundles (with sourcemaps) under `dist/` so downstream
+services or package registries can consume the exact same SCRT implementation
+that powers the frontend.
+
 ### Temporal Field Types
 
 The schema DSL understands five time-aware primitives in addition to the existing numeric/string kinds:
@@ -179,61 +345,11 @@ u32-length schema DSL, u16-count index entries, optional payload section). No JS
 parsing is required on either side, and the TypeScript helper reconstructs the
 `Document` directly from the bytes.
 
-## Shared Schema Gateway
+For a scripted walk-through of the CRUD sample, open
+`http://localhost:5173/showcase.html`. The showcase page uploads a demo schema,
+pushes rows, fetches the binary bundle, and renders the decoded payload so you
+can inspect every step without leaving the browser.
 
-The `schema.HTTPService` exposes cached schema documents over HTTP so TypeScript
-clients can reuse the exact same DSL without shipping duplicate copies.
-
-```sh
-go run ./examples/schema_server \
-  -schema message=data.scrt \
-  -schema another=/path/to/another.scrt \
-  -addr :8080 -base-path /schemas
-```
-
-This starts a tiny server with multi-document CRUD endpoints:
-
-- `GET /schemas/documents` – enumerate every loaded SCRT document.
-- `POST /schemas/documents?name={doc}` – upload/replace a `.scrt` document (request body is raw DSL text).
-- `GET /schemas/documents/{doc}` – download the DSL text for a specific document.
-- `POST /schemas/documents/{doc}/records/{schema}` – attach binary SCRT rows for a schema.
-- `GET /schemas/documents/{doc}/records/{schema}` – fetch the stored rows.
-- `GET /schemas/bundle?document={doc}&schema={Schema}` – emit the binary bundle described above (schema text + metadata + optional payload) in a single round-trip.
-- `GET /schemas/index?document={doc}` / `GET /schemas/doc?document={doc}` – debugging helpers for the DSL/index view.
-
-On the client side, use the `SchemaHttpClient` helper to stay in sync:
-
-```ts
-import { SchemaHttpClient } from "./ts/apiClient";
-
-const client = new SchemaHttpClient({
-  baseUrl: "http://localhost:8080",
-  defaultDocument: "message",
-  // paths are customizable if your routes live elsewhere
-  // paths: {
-  //   bundle: "/api/scrt/bundle",
-  //   documents: "/api/scrt/docs",
-  //   documentRecords: (doc, schema) => `/api/scrt/docs/${doc}/records/${schema}`,
-  // },
-});
-const decoded = await client.fetchRecords("Message", () => ({
-  MsgID: 0,
-  User: 0,
-  Text: "",
-  Lang: "",
-}), { document: "message" });
-
-// marshal/unmarshal helpers are still available when you have local data
-const messageSchema = await client.schema("Message", "message");
-const payload = await client.marshal("Message", [
-  { MsgID: 1, User: 42, Text: "hey", Lang: "en" },
-]);
-
-// Document management helpers
-await client.upsertDocument("inventory", scrtDslString); // raw `.scrt` text
-const docs = await client.listDocuments(); // [{ name: "message", ... }, ...]
-await client.pushRecords("inventory", "Stock", binaryPayload); // binary SCRT rows
-```
-
-Both sides rely on the same `.scrt` file, fingerprints, and field order,
-ensuring marshaling/unmarshaling stays deterministic across Go and TypeScript.
+Both the Go backend and the TypeScript helpers operate on the same `.scrt`
+definitions, fingerprints, and field order, ensuring marshaling/unmarshaling
+stays deterministic across platforms.
