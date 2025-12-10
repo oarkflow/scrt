@@ -21,6 +21,12 @@ Within a schema:
 - Refs are encoded as unsigned ints referencing the primary key of the target schema.
 - Strings live in a deduplicated dictionary for the current page and are referenced via varint handles.
 
+### Binary Encoding v2
+
+- **Presence bitmaps** – every column carries a bitmap that records whether a row supplied a value. If a field is omitted (or relies on a schema default) no bytes are written for that row.
+- **Implicit defaults** – decoders rebuild omitted values from the schema defaults, so round-trips behave as if the field had been stored explicitly.
+- **Delta-compressed integers** – monotonic `uint64` streams (auto-increment IDs, refs) and all `int64`-backed fields emit a base value plus varint deltas, matching or beating protobuf varints on sparse key sequences.
+
 ## DSL Data Rows
 
 The data section that follows each `@schema` block now has a more forgiving parser:

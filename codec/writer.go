@@ -11,7 +11,7 @@ import (
 
 const (
 	magic   = "SCRT"
-	version = byte(1)
+	version = byte(2)
 )
 
 // Writer streams rows into the SCRT binary format.
@@ -44,9 +44,11 @@ func (w *Writer) WriteRow(row Row) error {
 
 	for idx, field := range w.schema.Fields {
 		val := &row.values[idx]
-		if !val.Set && field.Default != nil {
-			applyDefault(field, val)
+		if !val.Set {
+			w.builder.RecordPresence(idx, false)
+			continue
 		}
+		w.builder.RecordPresence(idx, true)
 		kind := field.ValueKind()
 		switch kind {
 		case schema.KindUint64:
@@ -135,35 +137,4 @@ func (w *Writer) flushPage() error {
 		return err
 	}
 	return nil
-}
-
-func applyDefault(field schema.Field, v *Value) {
-	if field.Default == nil || v == nil {
-		return
-	}
-	switch field.Default.Kind {
-	case schema.KindUint64, schema.KindRef:
-		v.Uint = field.Default.Uint
-	case schema.KindString:
-		v.Str = field.Default.String
-	case schema.KindBool:
-		v.Bool = field.Default.Bool
-	case schema.KindInt64:
-		v.Int = field.Default.Int
-	case schema.KindFloat64:
-		v.Float = field.Default.Float
-	case schema.KindBytes:
-		if field.Default.Bytes != nil {
-			buf := make([]byte, len(field.Default.Bytes))
-			copy(buf, field.Default.Bytes)
-			v.Bytes = buf
-		} else {
-			v.Bytes = nil
-		}
-	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
-		v.Int = field.Default.Int
-	case schema.KindTimestampTZ:
-		v.Str = field.Default.String
-	}
-	v.Set = true
 }

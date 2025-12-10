@@ -90,3 +90,48 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("expected eof")
 	}
 }
+
+func TestDefaultValueOmitted(t *testing.T) {
+	sch := &schema.Schema{
+		Name: "Message",
+		Fields: []schema.Field{
+			{Name: "MsgID", Kind: schema.KindUint64, RawType: "uint64"},
+			{Name: "User", Kind: schema.KindUint64, RawType: "uint64"},
+			{Name: "Text", Kind: schema.KindString, RawType: "string"},
+			{
+				Name:    "Lang",
+				Kind:    schema.KindString,
+				RawType: "string",
+				Default: &schema.DefaultValue{Kind: schema.KindString, String: "en"},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	writer := codec.NewWriter(&buf, sch, 4)
+	row := codec.NewRow(sch)
+	if err := row.SetUint("MsgID", 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := row.SetUint("User", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := row.SetString("Text", "Hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteRow(row); err != nil {
+		t.Fatalf("write row: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	reader := codec.NewReader(bytes.NewReader(buf.Bytes()), sch)
+	decoded := codec.NewRow(sch)
+	ok, err := reader.ReadRow(decoded)
+	if err != nil || !ok {
+		t.Fatalf("read row: ok=%v err=%v", ok, err)
+	}
+	vals := decoded.Values()
+	if !vals[3].Set || vals[3].Str != "en" {
+		t.Fatalf("expected default lang 'en', got %+v", vals[3])
+	}
+}

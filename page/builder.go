@@ -26,6 +26,7 @@ type columnHandle struct {
 	ints    *column.Int64Column
 	floats  *column.Float64Column
 	bytes   *column.BytesColumn
+	present []bool
 }
 
 // NewBuilder creates a builder with the provided row capacity.
@@ -165,6 +166,12 @@ func (b *Builder) AppendBytes(idx int, v []byte) {
 	handle.bytes.Append(v)
 }
 
+// RecordPresence tracks whether the current row provided a value for idx.
+func (b *Builder) RecordPresence(idx int, present bool) {
+	handle := &b.columns[idx]
+	handle.present = append(handle.present, present)
+}
+
 // SealRow increments the buffered row count after all field values were appended.
 func (b *Builder) SealRow() {
 	b.rows++
@@ -195,6 +202,9 @@ func (b *Builder) Reset() {
 		if b.columns[i].bytes != nil {
 			b.columns[i].bytes.Reset()
 		}
+		if b.columns[i].present != nil {
+			b.columns[i].present = b.columns[i].present[:0]
+		}
 	}
 }
 
@@ -208,6 +218,7 @@ func (b *Builder) Encode(dst *bytes.Buffer) {
 
 	for idx, col := range b.columns {
 		b.columnBuf.Reset()
+		writePresence(&b.columnBuf, col.present, b.rows)
 		switch col.kind {
 		case schema.KindUint64, schema.KindRef:
 			col.uints.Encode(&b.columnBuf)
@@ -231,5 +242,36 @@ func (b *Builder) Encode(dst *bytes.Buffer) {
 		dst.WriteByte(byte(col.kind))
 		writeUvarint(dst, uint64(len(segment)))
 		dst.Write(segment)
+	}
+}
+
+func writePresence(dst *bytes.Buffer, bits []bool, rows int) {
+	byteLen := (rows + 7) / 8
+	writeUvarint(dst, uint64(byteLen))
+	if byteLen == 0 {
+		return
+	}
+	var current byte
+	var shift uint
+	written := 0
+	for i := 0; i < rows; i++ {
+		if i < len(bits) && bits[i] {
+			current |= 1 << shift
+		}
+		shift++
+		if shift == 8 {
+			dst.WriteByte(current)
+			written++
+			current = 0
+			shift = 0
+		}
+	}
+	if shift != 0 {
+		dst.WriteByte(current)
+		written++
+	}
+	for written < byteLen {
+		dst.WriteByte(0)
+		written++
 	}
 }

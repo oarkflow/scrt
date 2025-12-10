@@ -13,7 +13,7 @@
         "types": [ "node" ],
         "baseUrl": ".",
         "paths": {
-            "@scrt/*": [ "ts/*" ]
+            "@scrt/*": [ "src/*" ]
         }
     },
     "include": [

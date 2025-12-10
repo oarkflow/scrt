@@ -2,6 +2,7 @@ package scrt_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -175,6 +176,18 @@ func BenchmarkCSV_Marshal_100(b *testing.B) {
 	}
 }
 
+func BenchmarkProto_Marshal_Struct_100(b *testing.B) {
+	messages := generateMessages(100)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := encodeProtoMessages(messages)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkSCRT_Marshal_Struct_1000(b *testing.B) {
 	messages := generateMessages(1000)
 	b.ResetTimer()
@@ -208,6 +221,18 @@ func BenchmarkCSV_Marshal_1000(b *testing.B) {
 	}
 }
 
+func BenchmarkProto_Marshal_Struct_1000(b *testing.B) {
+	messages := generateMessages(1000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := encodeProtoMessages(messages)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkSCRT_Marshal_Struct_10000(b *testing.B) {
 	messages := generateMessages(10000)
 	b.ResetTimer()
@@ -238,6 +263,18 @@ func BenchmarkCSV_Marshal_10000(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = generateCSV(messages)
+	}
+}
+
+func BenchmarkProto_Marshal_Struct_10000(b *testing.B) {
+	messages := generateMessages(10000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := encodeProtoMessages(messages)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -282,6 +319,22 @@ func BenchmarkCSV_Unmarshal_100(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, err := parseCSV(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkProto_Unmarshal_Struct_100(b *testing.B) {
+	messages := generateMessages(100)
+	data, err := encodeProtoMessages(messages)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := decodeProtoMessages(data)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -335,6 +388,22 @@ func BenchmarkCSV_Unmarshal_1000(b *testing.B) {
 	}
 }
 
+func BenchmarkProto_Unmarshal_Struct_1000(b *testing.B) {
+	messages := generateMessages(1000)
+	data, err := encodeProtoMessages(messages)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := decodeProtoMessages(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkSCRT_Unmarshal_Struct_10000(b *testing.B) {
 	messages := generateMessages(10000)
 	data, err := scrt.Marshal(benchSchema, messages)
@@ -359,6 +428,22 @@ func BenchmarkCSV_Unmarshal_10000(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, err := parseCSV(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkProto_Unmarshal_Struct_10000(b *testing.B) {
+	messages := generateMessages(10000)
+	data, err := encodeProtoMessages(messages)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := decodeProtoMessages(data)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -400,6 +485,15 @@ func BenchmarkDataSize_JSON_100(b *testing.B) {
 	b.ReportMetric(float64(len(data)), "bytes")
 }
 
+func BenchmarkDataSize_PROTO_100(b *testing.B) {
+	messages := generateMessages(100)
+	data, err := encodeProtoMessages(messages)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportMetric(float64(len(data)), "bytes")
+}
+
 func BenchmarkDataSize_SCRT_1000(b *testing.B) {
 	messages := generateMessages(1000)
 	data, err := scrt.Marshal(benchSchema, messages)
@@ -418,6 +512,15 @@ func BenchmarkDataSize_JSON_1000(b *testing.B) {
 	b.ReportMetric(float64(len(data)), "bytes")
 }
 
+func BenchmarkDataSize_PROTO_1000(b *testing.B) {
+	messages := generateMessages(1000)
+	data, err := encodeProtoMessages(messages)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportMetric(float64(len(data)), "bytes")
+}
+
 func BenchmarkDataSize_SCRT_10000(b *testing.B) {
 	messages := generateMessages(10000)
 	data, err := scrt.Marshal(benchSchema, messages)
@@ -430,6 +533,15 @@ func BenchmarkDataSize_SCRT_10000(b *testing.B) {
 func BenchmarkDataSize_JSON_10000(b *testing.B) {
 	messages := generateMessages(10000)
 	data, err := json.Marshal(messages)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportMetric(float64(len(data)), "bytes")
+}
+
+func BenchmarkDataSize_PROTO_10000(b *testing.B) {
+	messages := generateMessages(10000)
+	data, err := encodeProtoMessages(messages)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -464,6 +576,22 @@ func BenchmarkRoundTrip_JSON_1000(b *testing.B) {
 		}
 		var result []BenchMessage
 		err = json.Unmarshal(data, &result)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRoundTrip_PROTO_1000(b *testing.B) {
+	messages := generateMessages(1000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		data, err := encodeProtoMessages(messages)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, err = decodeProtoMessages(data)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -698,5 +826,206 @@ func BenchmarkRoundTrip_CSV_1000(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+const (
+	protoWireVarint       = 0
+	protoWireBytes        = 2
+	protoEnvelopeFieldNum = 1
+)
+
+func encodeProtoMessages(messages []BenchMessage) ([]byte, error) {
+	out := make([]byte, 0, len(messages)*64)
+	scratch := make([]byte, 0, 64)
+	for _, msg := range messages {
+		scratch = scratch[:0]
+		scratch = appendProtoMessage(scratch, msg)
+		out = appendProtoTag(out, protoEnvelopeFieldNum, protoWireBytes)
+		out = appendUvarint(out, uint64(len(scratch)))
+		out = append(out, scratch...)
+	}
+	return out, nil
+}
+
+func decodeProtoMessages(data []byte) ([]BenchMessage, error) {
+	result := make([]BenchMessage, 0, 32)
+	for len(data) > 0 {
+		field, wireType, consumed, err := readProtoTag(data)
+		if err != nil {
+			return nil, err
+		}
+		if field != protoEnvelopeFieldNum || wireType != protoWireBytes {
+			return nil, fmt.Errorf("bench proto: unexpected envelope field %d wire %d", field, wireType)
+		}
+		data = data[consumed:]
+		length, n, err := consumeUvarint(data)
+		if err != nil {
+			return nil, err
+		}
+		data = data[n:]
+		if int(length) > len(data) {
+			return nil, fmt.Errorf("bench proto: truncated message payload")
+		}
+		payload := data[:length]
+		msg, err := parseProtoMessage(payload)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, msg)
+		data = data[length:]
+	}
+	return result, nil
+}
+
+func appendProtoMessage(dst []byte, msg BenchMessage) []byte {
+	dst = appendProtoVarint(dst, 1, msg.MsgID)
+	dst = appendProtoVarint(dst, 2, msg.User)
+	dst = appendProtoBytes(dst, 3, []byte(msg.Text))
+	dst = appendProtoBytes(dst, 4, []byte(msg.Lang))
+	if msg.Seen {
+		dst = appendProtoVarint(dst, 5, 1)
+	} else {
+		dst = appendProtoVarint(dst, 5, 0)
+	}
+	return dst
+}
+
+func parseProtoMessage(data []byte) (BenchMessage, error) {
+	var msg BenchMessage
+	for len(data) > 0 {
+		field, wireType, consumed, err := readProtoTag(data)
+		if err != nil {
+			return msg, err
+		}
+		data = data[consumed:]
+		switch field {
+		case 1:
+			if wireType != protoWireVarint {
+				return msg, fmt.Errorf("bench proto: unexpected wire type %d for msg_id", wireType)
+			}
+			value, n, err := consumeUvarint(data)
+			if err != nil {
+				return msg, err
+			}
+			msg.MsgID = value
+			data = data[n:]
+		case 2:
+			if wireType != protoWireVarint {
+				return msg, fmt.Errorf("bench proto: unexpected wire type %d for user", wireType)
+			}
+			value, n, err := consumeUvarint(data)
+			if err != nil {
+				return msg, err
+			}
+			msg.User = value
+			data = data[n:]
+		case 3:
+			if wireType != protoWireBytes {
+				return msg, fmt.Errorf("bench proto: unexpected wire type %d for text", wireType)
+			}
+			str, n, err := consumeBytes(data)
+			if err != nil {
+				return msg, err
+			}
+			msg.Text = str
+			data = data[n:]
+		case 4:
+			if wireType != protoWireBytes {
+				return msg, fmt.Errorf("bench proto: unexpected wire type %d for lang", wireType)
+			}
+			str, n, err := consumeBytes(data)
+			if err != nil {
+				return msg, err
+			}
+			msg.Lang = str
+			data = data[n:]
+		case 5:
+			if wireType != protoWireVarint {
+				return msg, fmt.Errorf("bench proto: unexpected wire type %d for seen", wireType)
+			}
+			value, n, err := consumeUvarint(data)
+			if err != nil {
+				return msg, err
+			}
+			msg.Seen = value != 0
+			data = data[n:]
+		default:
+			skipped, err := skipProtoField(wireType, data)
+			if err != nil {
+				return msg, err
+			}
+			data = data[skipped:]
+		}
+	}
+	return msg, nil
+}
+
+func appendProtoVarint(dst []byte, field int, value uint64) []byte {
+	dst = appendProtoTag(dst, field, protoWireVarint)
+	return appendUvarint(dst, value)
+}
+
+func appendProtoBytes(dst []byte, field int, value []byte) []byte {
+	dst = appendProtoTag(dst, field, protoWireBytes)
+	dst = appendUvarint(dst, uint64(len(value)))
+	return append(dst, value...)
+}
+
+func appendProtoTag(dst []byte, field int, wireType int) []byte {
+	tag := uint64(field<<3 | wireType)
+	return appendUvarint(dst, tag)
+}
+
+func appendUvarint(dst []byte, value uint64) []byte {
+	var buf [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(buf[:], value)
+	return append(dst, buf[:n]...)
+}
+
+func readProtoTag(data []byte) (field int, wireType int, consumed int, err error) {
+	tag, n := binary.Uvarint(data)
+	if n <= 0 {
+		return 0, 0, 0, fmt.Errorf("bench proto: malformed tag")
+	}
+	return int(tag >> 3), int(tag & 0x7), n, nil
+}
+
+func consumeUvarint(data []byte) (uint64, int, error) {
+	value, n := binary.Uvarint(data)
+	if n <= 0 {
+		return 0, 0, fmt.Errorf("bench proto: malformed varint")
+	}
+	return value, n, nil
+}
+
+func consumeBytes(data []byte) (string, int, error) {
+	length, n, err := consumeUvarint(data)
+	if err != nil {
+		return "", 0, err
+	}
+	data = data[n:]
+	if int(length) > len(data) {
+		return "", 0, fmt.Errorf("bench proto: truncated bytes field")
+	}
+	return string(data[:length]), n + int(length), nil
+}
+
+func skipProtoField(wireType int, data []byte) (int, error) {
+	switch wireType {
+	case protoWireVarint:
+		_, n, err := consumeUvarint(data)
+		return n, err
+	case protoWireBytes:
+		length, n, err := consumeUvarint(data)
+		if err != nil {
+			return 0, err
+		}
+		if int(length) > len(data)-n {
+			return 0, fmt.Errorf("bench proto: truncated skip payload")
+		}
+		return n + int(length), nil
+	default:
+		return 0, fmt.Errorf("bench proto: unsupported wire type %d", wireType)
 	}
 }

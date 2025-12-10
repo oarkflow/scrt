@@ -2,45 +2,55 @@ goos: linux
 goarch: amd64
 pkg: github.com/oarkflow/scrt
 cpu: Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz
-BenchmarkSCRT_Marshal_Struct_100-8            	  163914	     21333 ns/op	    3481 B/op	      15 allocs/op
-BenchmarkJSON_Marshal_Struct_100-8            	  163317	     23067 ns/op	   12317 B/op	       2 allocs/op
-BenchmarkCSV_Marshal_100-8                    	  189068	     19683 ns/op	   16836 B/op	     105 allocs/op
-BenchmarkSCRT_Marshal_Struct_1000-8           	   19494	    190632 ns/op	   22888 B/op	      14 allocs/op
-BenchmarkJSON_Marshal_Struct_1000-8           	   14439	    256823 ns/op	  122943 B/op	       2 allocs/op
-BenchmarkCSV_Marshal_1000-8                   	   10000	    350161 ns/op	  269797 B/op	    1909 allocs/op
-BenchmarkSCRT_Marshal_Struct_10000-8          	    1812	   1817241 ns/op	   88980 B/op	      23 allocs/op
-BenchmarkJSON_Marshal_Struct_10000-8          	    1420	   2491984 ns/op	 1243891 B/op	       2 allocs/op
-BenchmarkCSV_Marshal_10000-8                  	    1450	   3221296 ns/op	 2176819 B/op	   19912 allocs/op
-BenchmarkSCRT_Unmarshal_Struct_100-8          	  103545	     32173 ns/op	   15845 B/op	      21 allocs/op
-BenchmarkJSON_Unmarshal_Struct_100-8          	   28538	    125277 ns/op	   23064 B/op	     214 allocs/op
-BenchmarkCSV_Unmarshal_100-8                  	  134547	     27718 ns/op	   34512 B/op	     226 allocs/op
-BenchmarkSCRT_Unmarshal_Struct_1000-8         	   13105	    271587 ns/op	   96960 B/op	      21 allocs/op
-BenchmarkJSON_Unmarshal_Struct_1000-8         	    2916	   1248125 ns/op	  188961 B/op	    2017 allocs/op
-BenchmarkCSV_Unmarshal_1000-8                 	   13158	    269446 ns/op	  281553 B/op	    2029 allocs/op
-BenchmarkSCRT_Unmarshal_Struct_10000-8        	    1257	   3035063 ns/op	 1859110 B/op	      31 allocs/op
-BenchmarkCSV_Unmarshal_10000-8                	    1370	   2675625 ns/op	 3146974 B/op	   20036 allocs/op
-BenchmarkJSON_Unmarshal_Struct_10000-8        	     259	  13567290 ns/op	 3314306 B/op	   20025 allocs/op
-BenchmarkDataSize_SCRT_100-8                  	1000000000	         0.0000423 ns/op	       706.0 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_JSON_100-8                  	1000000000	         0.0000259 ns/op	     12043 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_SCRT_1000-8                 	1000000000	         0.0002014 ns/op	      6988 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_JSON_1000-8                 	1000000000	         0.0002702 ns/op	    121394 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_SCRT_10000-8                	1000000000	         0.001883 ns/op	     70906 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_JSON_10000-8                	1000000000	         0.003872 ns/op	   1223895 bytes	       0 B/op	       0 allocs/op
-BenchmarkRoundTrip_SCRT_1000-8                	    7896	    453629 ns/op	  122440 B/op	      35 allocs/op
-BenchmarkRoundTrip_JSON_1000-8                	    2428	   1483169 ns/op	  319008 B/op	    2019 allocs/op
-BenchmarkSCRT_Marshal_Map_1000-8              	   13334	    270907 ns/op	   22987 B/op	      14 allocs/op
-BenchmarkSCRT_Marshal_TypedMap_1000-8         	   27585	    131241 ns/op	   20065 B/op	      14 allocs/op
-BenchmarkJSON_Marshal_Map_1000-8              	    3049	   1188856 ns/op	  491258 B/op	   11002 allocs/op
-BenchmarkSCRT_Unmarshal_Map_1000-8            	    6967	    572383 ns/op	  429893 B/op	    5766 allocs/op
-BenchmarkSCRT_Unmarshal_TypedMap_1000-8       	   10000	    312556 ns/op	  299511 B/op	    2015 allocs/op
-BenchmarkSCRT_Marshal_NestedMap_1000-8        	     934	   3716524 ns/op	 2898614 B/op	   33018 allocs/op
-BenchmarkSCRT_Unmarshal_NestedMap_1000-8      	     958	   3773956 ns/op	 5823759 B/op	   47771 allocs/op
-BenchmarkSCRT_Unmarshal_BytesMap_Copy-8       	    3844	    990459 ns/op	 2473921 B/op	    6764 allocs/op
-BenchmarkSCRT_Unmarshal_BytesMap_ZeroCopy-8   	    7977	    488556 ns/op	  911986 B/op	    3760 allocs/op
-BenchmarkJSON_Unmarshal_Map_1000-8            	    1783	   2039749 ns/op	  601723 B/op	   21006 allocs/op
-BenchmarkDataSize_CSV_100-8                   	1000000000	         0.0000234 ns/op	      7868 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_CSV_1000-8                  	1000000000	         0.0002486 ns/op	     79419 bytes	       0 B/op	       0 allocs/op
-BenchmarkDataSize_CSV_10000-8                 	1000000000	         0.001900 ns/op	    803920 bytes	       0 B/op	       0 allocs/op
-BenchmarkRoundTrip_CSV_1000-8                 	    7621	    516095 ns/op	  551353 B/op	    3938 allocs/op
+BenchmarkSCRT_Marshal_Struct_100-8            	  166453	     23684 ns/op	    2970 B/op	      15 allocs/op
+BenchmarkJSON_Marshal_Struct_100-8            	  153344	     24136 ns/op	   12318 B/op	       2 allocs/op
+BenchmarkCSV_Marshal_100-8                    	  192280	     32849 ns/op	   16836 B/op	     105 allocs/op
+BenchmarkProto_Marshal_Struct_100-8           	  333536	     16970 ns/op	   14848 B/op	       3 allocs/op
+BenchmarkSCRT_Marshal_Struct_1000-8           	   18668	    192554 ns/op	   18662 B/op	      14 allocs/op
+BenchmarkJSON_Marshal_Struct_1000-8           	   13345	    295177 ns/op	  122983 B/op	       2 allocs/op
+BenchmarkCSV_Marshal_1000-8                   	   10000	    395854 ns/op	  269797 B/op	    1909 allocs/op
+BenchmarkProto_Marshal_Struct_1000-8          	   29900	    127608 ns/op	  147584 B/op	       3 allocs/op
+BenchmarkSCRT_Marshal_Struct_10000-8          	    1704	   1878997 ns/op	   85953 B/op	      23 allocs/op
+BenchmarkJSON_Marshal_Struct_10000-8          	    1489	   2433748 ns/op	 1243217 B/op	       2 allocs/op
+BenchmarkCSV_Marshal_10000-8                  	    1431	   4445633 ns/op	 2176819 B/op	   19912 allocs/op
+BenchmarkProto_Marshal_Struct_10000-8         	    4017	    763690 ns/op	 1450112 B/op	       3 allocs/op
+BenchmarkSCRT_Unmarshal_Struct_100-8          	  125152	     31931 ns/op	   18534 B/op	      26 allocs/op
+BenchmarkJSON_Unmarshal_Struct_100-8          	   28809	    124582 ns/op	   23064 B/op	     214 allocs/op
+BenchmarkCSV_Unmarshal_100-8                  	  129871	     33434 ns/op	   34512 B/op	     226 allocs/op
+BenchmarkProto_Unmarshal_Struct_100-8         	  204920	     19364 ns/op	   20936 B/op	     203 allocs/op
+BenchmarkSCRT_Unmarshal_Struct_1000-8         	   13660	    262224 ns/op	  116166 B/op	      26 allocs/op
+BenchmarkJSON_Unmarshal_Struct_1000-8         	    2914	   1232459 ns/op	  188961 B/op	    2017 allocs/op
+BenchmarkCSV_Unmarshal_1000-8                 	   13322	    350879 ns/op	  281554 B/op	    2029 allocs/op
+BenchmarkProto_Unmarshal_Struct_1000-8        	   20535	    195405 ns/op	  186833 B/op	    2006 allocs/op
+BenchmarkSCRT_Unmarshal_Struct_10000-8        	     937	   4217203 ns/op	 1877135 B/op	      36 allocs/op
+BenchmarkCSV_Unmarshal_10000-8                	    1334	   3003016 ns/op	 3146969 B/op	   20036 allocs/op
+BenchmarkProto_Unmarshal_Struct_10000-8       	    1954	   1896397 ns/op	 3312187 B/op	   20014 allocs/op
+BenchmarkJSON_Unmarshal_Struct_10000-8        	     277	  12853548 ns/op	 3314305 B/op	   20025 allocs/op
+BenchmarkDataSize_SCRT_100-8                  	1000000000	         0.0000614 ns/op	       678.0 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_JSON_100-8                  	1000000000	         0.0000437 ns/op	     12043 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_PROTO_100-8                 	1000000000	         0.0000125 ns/op	      7600 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_SCRT_1000-8                 	1000000000	         0.0002237 ns/op	      6745 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_JSON_1000-8                 	1000000000	         0.0005995 ns/op	    121394 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_PROTO_1000-8                	1000000000	         0.0000667 ns/op	     76873 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_SCRT_10000-8                	1000000000	         0.002264 ns/op	     67387 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_JSON_10000-8                	1000000000	         0.003144 ns/op	   1223895 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_PROTO_10000-8               	1000000000	         0.0006903 ns/op	    769873 bytes	       0 B/op	       0 allocs/op
+BenchmarkRoundTrip_SCRT_1000-8                	    7549	    454881 ns/op	  138169 B/op	      41 allocs/op
+BenchmarkRoundTrip_JSON_1000-8                	    2480	   1470790 ns/op	  320876 B/op	    2019 allocs/op
+BenchmarkRoundTrip_PROTO_1000-8               	   14223	    315181 ns/op	  334418 B/op	    2009 allocs/op
+BenchmarkSCRT_Marshal_Map_1000-8              	   12788	    277349 ns/op	   18668 B/op	      14 allocs/op
+BenchmarkSCRT_Marshal_TypedMap_1000-8         	   26053	    138645 ns/op	   13536 B/op	      14 allocs/op
+BenchmarkJSON_Marshal_Map_1000-8              	    3280	   1261598 ns/op	  491166 B/op	   11002 allocs/op
+BenchmarkSCRT_Unmarshal_Map_1000-8            	    5604	    694765 ns/op	  449093 B/op	    5771 allocs/op
+BenchmarkSCRT_Unmarshal_TypedMap_1000-8       	    9466	    370988 ns/op	  311291 B/op	    2018 allocs/op
+BenchmarkSCRT_Marshal_NestedMap_1000-8        	     774	   4010755 ns/op	 2894191 B/op	   33020 allocs/op
+BenchmarkSCRT_Unmarshal_NestedMap_1000-8      	    1047	   3498135 ns/op	 5842980 B/op	   47776 allocs/op
+BenchmarkSCRT_Unmarshal_BytesMap_Copy-8       	    3742	    908946 ns/op	 2482174 B/op	    6766 allocs/op
+BenchmarkSCRT_Unmarshal_BytesMap_ZeroCopy-8   	    8413	    492016 ns/op	  920230 B/op	    3762 allocs/op
+BenchmarkJSON_Unmarshal_Map_1000-8            	    1768	   2029878 ns/op	  601722 B/op	   21006 allocs/op
+BenchmarkDataSize_CSV_100-8                   	1000000000	         0.0000363 ns/op	      7868 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_CSV_1000-8                  	1000000000	         0.0002823 ns/op	     79419 bytes	       0 B/op	       0 allocs/op
+BenchmarkDataSize_CSV_10000-8                 	1000000000	         0.001941 ns/op	    803920 bytes	       0 B/op	       0 allocs/op
+BenchmarkRoundTrip_CSV_1000-8                 	    7857	    662903 ns/op	  551354 B/op	    3938 allocs/op
 PASS
-ok  	github.com/oarkflow/scrt	142.955s
+ok  	github.com/oarkflow/scrt	204.246s

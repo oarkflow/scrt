@@ -31,6 +31,7 @@ type decodedPage struct {
 
 type decodedColumn struct {
 	kind          schema.FieldKind
+	rowIndexes    []int32
 	uints         []uint64
 	stringOffsets []uint32
 	stringLens    []uint32
@@ -94,18 +95,27 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 
 	idx := r.pageState.cursor
 	for fieldIdx, field := range r.schema.Fields {
+		col := &r.pageState.columns[fieldIdx]
+		valueIdx := -1
+		if idx < len(col.rowIndexes) {
+			valueIdx = int(col.rowIndexes[idx])
+		}
+		if valueIdx < 0 {
+			row.values[fieldIdx] = Value{}
+			assignDefaultValue(&row.values[fieldIdx], field)
+			continue
+		}
 		kind := field.ValueKind()
 		switch kind {
 		case schema.KindUint64:
-			row.values[fieldIdx].Uint = r.pageState.columns[fieldIdx].uints[idx]
+			row.values[fieldIdx].Uint = col.uints[valueIdx]
 			row.values[fieldIdx].Str = ""
 			row.values[fieldIdx].Set = true
 		case schema.KindString, schema.KindTimestampTZ:
-			col := r.pageState.columns[fieldIdx]
-			if idx >= len(col.stringIndexes) {
+			if valueIdx >= len(col.stringIndexes) {
 				return false, fmt.Errorf("codec: string index missing")
 			}
-			dictIdx := col.stringIndexes[idx]
+			dictIdx := col.stringIndexes[valueIdx]
 			if int(dictIdx) >= len(col.stringOffsets) {
 				return false, fmt.Errorf("codec: string index out of range")
 			}
@@ -125,22 +135,21 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 			}
 			row.values[fieldIdx].Set = true
 		case schema.KindBool:
-			row.values[fieldIdx].Bool = r.pageState.columns[fieldIdx].bools[idx]
+			row.values[fieldIdx].Bool = col.bools[valueIdx]
 			row.values[fieldIdx].Set = true
 		case schema.KindInt64:
-			row.values[fieldIdx].Int = r.pageState.columns[fieldIdx].ints[idx]
+			row.values[fieldIdx].Int = col.ints[valueIdx]
 			row.values[fieldIdx].Set = true
 		case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
-			row.values[fieldIdx].Int = r.pageState.columns[fieldIdx].ints[idx]
+			row.values[fieldIdx].Int = col.ints[valueIdx]
 			row.values[fieldIdx].Set = true
 		case schema.KindFloat64:
-			row.values[fieldIdx].Float = r.pageState.columns[fieldIdx].floats[idx]
+			row.values[fieldIdx].Float = col.floats[valueIdx]
 			row.values[fieldIdx].Set = true
 		case schema.KindBytes:
-			col := r.pageState.columns[fieldIdx]
-			if len(col.byteOffsets) > idx {
-				offset := col.byteOffsets[idx]
-				length := col.byteLens[idx]
+			if len(col.byteOffsets) > valueIdx {
+				offset := col.byteOffsets[valueIdx]
+				length := col.byteLens[valueIdx]
 				segment := col.byteArena[offset : offset+length]
 				if r.zeroCopyBytes {
 					row.values[fieldIdx].Bytes = segment
@@ -258,15 +267,24 @@ func (r *Reader) decodePage(raw []byte) error {
 		raw = raw[payloadLen:]
 		col := &r.pageState.columns[int(fieldIdx)]
 		col.kind = kind
+		indexes, setCount, consumed, err := decodePresence(payload, int(rows), col.rowIndexes)
+		if err != nil {
+			return err
+		}
+		col.rowIndexes = indexes
+		if consumed > len(payload) {
+			return io.ErrUnexpectedEOF
+		}
+		payload = payload[consumed:]
 		switch kind {
 		case schema.KindUint64, schema.KindRef:
-			values, err := decodeUintColumn(payload, col.uints)
+			values, err := decodeUintColumn(payload, col.uints, setCount)
 			if err != nil {
 				return err
 			}
 			col.uints = values
 		case schema.KindString, schema.KindTimestampTZ:
-			offsets, lens, indexes, arena, err := decodeStringColumn(payload, col.stringOffsets, col.stringLens, col.stringIndexes)
+			offsets, lens, indexes, arena, err := decodeStringColumn(payload, col.stringOffsets, col.stringLens, col.stringIndexes, setCount)
 			if err != nil {
 				return err
 			}
@@ -275,31 +293,31 @@ func (r *Reader) decodePage(raw []byte) error {
 			col.stringIndexes = indexes
 			col.stringArena = arena
 		case schema.KindBool:
-			values, err := decodeBoolColumn(payload, col.bools)
+			values, err := decodeBoolColumn(payload, col.bools, setCount)
 			if err != nil {
 				return err
 			}
 			col.bools = values
 		case schema.KindInt64:
-			values, err := decodeIntColumn(payload, col.ints)
+			values, err := decodeIntColumn(payload, col.ints, setCount)
 			if err != nil {
 				return err
 			}
 			col.ints = values
 		case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
-			values, err := decodeIntColumn(payload, col.ints)
+			values, err := decodeIntColumn(payload, col.ints, setCount)
 			if err != nil {
 				return err
 			}
 			col.ints = values
 		case schema.KindFloat64:
-			values, err := decodeFloatColumn(payload, col.floats)
+			values, err := decodeFloatColumn(payload, col.floats, setCount)
 			if err != nil {
 				return err
 			}
 			col.floats = values
 		case schema.KindBytes:
-			offsets, lengths, arena, err := decodeBytesColumn(payload, col.byteOffsets, col.byteLens)
+			offsets, lengths, arena, err := decodeBytesColumn(payload, col.byteOffsets, col.byteLens, setCount)
 			if err != nil {
 				return err
 			}
@@ -315,25 +333,38 @@ func (r *Reader) decodePage(raw []byte) error {
 	return nil
 }
 
-func decodeUintColumn(data []byte, dst []uint64) ([]uint64, error) {
-	count, n := binary.Uvarint(data)
+func decodePresence(data []byte, rows int, dst []int32) ([]int32, int, int, error) {
+	byteLen, n := binary.Uvarint(data)
 	if n <= 0 {
-		return nil, fmt.Errorf("codec: malformed uint column length")
+		return nil, 0, 0, fmt.Errorf("codec: malformed presence length")
 	}
 	data = data[n:]
-	dst = ensureUint64Slice(dst, int(count))
-	for i := 0; i < int(count); i++ {
-		v, consumed := binary.Uvarint(data)
-		if consumed <= 0 {
-			return nil, fmt.Errorf("codec: malformed uint value")
-		}
-		dst[i] = v
-		data = data[consumed:]
+	if len(data) < int(byteLen) {
+		return nil, 0, 0, io.ErrUnexpectedEOF
 	}
-	return dst, nil
+	dst = ensureInt32Slice(dst, rows)
+	if rows == 0 {
+		return dst[:0], 0, n + int(byteLen), nil
+	}
+	bitmap := data[:byteLen]
+	setCount := 0
+	for row := 0; row < rows; row++ {
+		byteIdx := row / 8
+		bit := uint(row % 8)
+		if byteIdx >= len(bitmap) {
+			return nil, 0, 0, io.ErrUnexpectedEOF
+		}
+		if bitmap[byteIdx]&(1<<bit) != 0 {
+			dst[row] = int32(setCount)
+			setCount++
+		} else {
+			dst[row] = -1
+		}
+	}
+	return dst[:rows], setCount, n + int(byteLen), nil
 }
 
-func decodeStringColumn(data []byte, offsets, lengths, indexes []uint32) ([]uint32, []uint32, []uint32, []byte, error) {
+func decodeStringColumn(data []byte, offsets, lengths, indexes []uint32, expected int) ([]uint32, []uint32, []uint32, []byte, error) {
 	dictLen, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, nil, nil, nil, fmt.Errorf("codec: malformed dictionary length")
@@ -375,10 +406,13 @@ func decodeStringColumn(data []byte, offsets, lengths, indexes []uint32) ([]uint
 		}
 		indexes[i] = uint32(idx)
 	}
+	if int(indexLen) != expected {
+		return nil, nil, nil, nil, fmt.Errorf("codec: string index length %d != expected %d", indexLen, expected)
+	}
 	return offsets, lengths, indexes, arena, nil
 }
 
-func decodeBoolColumn(data []byte, dst []bool) ([]bool, error) {
+func decodeBoolColumn(data []byte, dst []bool, expected int) ([]bool, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed bool column length")
@@ -387,6 +421,9 @@ func decodeBoolColumn(data []byte, dst []bool) ([]bool, error) {
 	if len(data) < int(count) {
 		return nil, io.ErrUnexpectedEOF
 	}
+	if int(count) != expected {
+		return nil, fmt.Errorf("codec: bool column count %d != expected %d", count, expected)
+	}
 	dst = ensureBoolSlice(dst, int(count))
 	for i := 0; i < int(count); i++ {
 		dst[i] = data[i] != 0
@@ -394,30 +431,111 @@ func decodeBoolColumn(data []byte, dst []bool) ([]bool, error) {
 	return dst, nil
 }
 
-func decodeIntColumn(data []byte, dst []int64) ([]int64, error) {
-	count, n := binary.Uvarint(data)
+func decodeUintColumn(data []byte, dst []uint64, expected int) ([]uint64, error) {
+	header, n := binary.Uvarint(data)
+	if n <= 0 {
+		return nil, fmt.Errorf("codec: malformed uint column length")
+	}
+	mode := header & 1
+	count := int(header >> 1)
+	if count != expected {
+		return nil, fmt.Errorf("codec: uint column count %d != expected %d", count, expected)
+	}
+	data = data[n:]
+	dst = ensureUint64Slice(dst, count)
+	if count == 0 {
+		return dst[:0], nil
+	}
+	switch mode {
+	case 0:
+		for i := 0; i < count; i++ {
+			v, consumed := binary.Uvarint(data)
+			if consumed <= 0 {
+				return nil, fmt.Errorf("codec: malformed uint value")
+			}
+			dst[i] = v
+			data = data[consumed:]
+		}
+	case 1:
+		first, consumed := binary.Uvarint(data)
+		if consumed <= 0 {
+			return nil, fmt.Errorf("codec: malformed delta base")
+		}
+		dst[0] = first
+		data = data[consumed:]
+		prev := first
+		for i := 1; i < count; i++ {
+			delta, used := binary.Uvarint(data)
+			if used <= 0 {
+				return nil, fmt.Errorf("codec: malformed delta value")
+			}
+			prev += delta
+			dst[i] = prev
+			data = data[used:]
+		}
+	default:
+		return nil, fmt.Errorf("codec: unknown uint column mode %d", mode)
+	}
+	return dst[:count], nil
+}
+
+func decodeIntColumn(data []byte, dst []int64, expected int) ([]int64, error) {
+	header, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed int column length")
 	}
-	data = data[n:]
-	dst = ensureInt64Slice(dst, int(count))
-	for i := 0; i < int(count); i++ {
-		v, consumed := binary.Varint(data)
-		if consumed <= 0 {
-			return nil, fmt.Errorf("codec: malformed int value")
-		}
-		dst[i] = v
-		data = data[consumed:]
+	mode := header & 1
+	count := int(header >> 1)
+	if count != expected {
+		return nil, fmt.Errorf("codec: int column count %d != expected %d", count, expected)
 	}
-	return dst, nil
+	data = data[n:]
+	dst = ensureInt64Slice(dst, count)
+	if count == 0 {
+		return dst[:0], nil
+	}
+	switch mode {
+	case 0:
+		for i := 0; i < count; i++ {
+			v, consumed := binary.Varint(data)
+			if consumed <= 0 {
+				return nil, fmt.Errorf("codec: malformed int value")
+			}
+			dst[i] = v
+			data = data[consumed:]
+		}
+	case 1:
+		first, consumed := binary.Varint(data)
+		if consumed <= 0 {
+			return nil, fmt.Errorf("codec: malformed delta base")
+		}
+		dst[0] = first
+		data = data[consumed:]
+		acc := first
+		for i := 1; i < count; i++ {
+			delta, used := binary.Varint(data)
+			if used <= 0 {
+				return nil, fmt.Errorf("codec: malformed delta value")
+			}
+			acc += delta
+			dst[i] = acc
+			data = data[used:]
+		}
+	default:
+		return nil, fmt.Errorf("codec: unknown int column mode %d", mode)
+	}
+	return dst[:count], nil
 }
 
-func decodeFloatColumn(data []byte, dst []float64) ([]float64, error) {
+func decodeFloatColumn(data []byte, dst []float64, expected int) ([]float64, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, fmt.Errorf("codec: malformed float column length")
 	}
 	data = data[n:]
+	if int(count) != expected {
+		return nil, fmt.Errorf("codec: float column count %d != expected %d", count, expected)
+	}
 	dst = ensureFloat64Slice(dst, int(count))
 	for i := 0; i < int(count); i++ {
 		if len(data) < 8 {
@@ -430,13 +548,16 @@ func decodeFloatColumn(data []byte, dst []float64) ([]float64, error) {
 	return dst, nil
 }
 
-func decodeBytesColumn(data []byte, offsets, lengths []uint32) ([]uint32, []uint32, []byte, error) {
+func decodeBytesColumn(data []byte, offsets, lengths []uint32, expected int) ([]uint32, []uint32, []byte, error) {
 	count, n := binary.Uvarint(data)
 	if n <= 0 {
 		return nil, nil, nil, fmt.Errorf("codec: malformed bytes column length")
 	}
 	idx := n
 	payloadStart := idx
+	if int(count) != expected {
+		return nil, nil, nil, fmt.Errorf("codec: bytes column count %d != expected %d", count, expected)
+	}
 	offsets = ensureUint32Slice(offsets, int(count))
 	lengths = ensureUint32Slice(lengths, int(count))
 	for i := 0; i < int(count); i++ {
@@ -535,6 +656,20 @@ func ensureUint32Slice(buf []uint32, size int) []uint32 {
 	return buf[:size]
 }
 
+func ensureInt32Slice(buf []int32, size int) []int32 {
+	if size == 0 {
+		if buf == nil {
+			return nil
+		}
+		return buf[:0]
+	}
+	if cap(buf) < size {
+		newCap := growCapacity(cap(buf), size)
+		buf = make([]int32, newCap)
+	}
+	return buf[:size]
+}
+
 func growCapacity(current, needed int) int {
 	if current == 0 {
 		current = 1
@@ -546,4 +681,40 @@ func growCapacity(current, needed int) int {
 		current *= 2
 	}
 	return current
+}
+
+func assignDefaultValue(dst *Value, field schema.Field) {
+	if dst == nil {
+		return
+	}
+	*dst = Value{}
+	def := field.Default
+	if def == nil {
+		return
+	}
+	dst.Set = true
+	switch def.Kind {
+	case schema.KindUint64, schema.KindRef:
+		dst.Uint = def.Uint
+	case schema.KindInt64:
+		dst.Int = def.Int
+	case schema.KindFloat64:
+		dst.Float = def.Float
+	case schema.KindBool:
+		dst.Bool = def.Bool
+	case schema.KindString:
+		dst.Str = def.String
+	case schema.KindBytes:
+		if def.Bytes != nil {
+			buf := make([]byte, len(def.Bytes))
+			copy(buf, def.Bytes)
+			dst.Bytes = buf
+		}
+	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
+		dst.Int = def.Int
+	case schema.KindTimestampTZ:
+		dst.Str = def.String
+	default:
+		dst.Set = false
+	}
 }

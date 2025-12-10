@@ -17,9 +17,28 @@ func (c *Int64Column) Append(v int64) {
 }
 
 func (c *Int64Column) Encode(dst *bytes.Buffer) {
-	writeUvarint(dst, uint64(len(c.values)))
-	for _, v := range c.values {
-		writeVarint(dst, v)
+	count := len(c.values)
+	mode := uint64(0)
+	if count > 1 {
+		mode = 1
+	}
+	header := (uint64(count) << 1) | mode
+	writeUvarint(dst, header)
+	if count == 0 {
+		return
+	}
+	if mode == 0 {
+		for _, v := range c.values {
+			writeVarint(dst, v)
+		}
+		return
+	}
+	writeVarint(dst, c.values[0])
+	prev := c.values[0]
+	for i := 1; i < count; i++ {
+		delta := c.values[i] - prev
+		writeVarint(dst, delta)
+		prev = c.values[i]
 	}
 }
 
