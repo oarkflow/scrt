@@ -10,6 +10,8 @@ const documentForm = document.getElementById("document-form");
 const recordForm = document.getElementById("record-form");
 const refreshDocsBtn = document.getElementById("refresh-docs");
 const loadRecordsBtn = document.getElementById("load-records");
+const recordModeSelect = document.getElementById("record-mode");
+const deleteRecordsBtn = document.getElementById("delete-records");
 const client = new ScrtHttpClient(serverInput.value || undefined);
 const cache = new Map();
 const embeddedDocuments = {
@@ -32,6 +34,9 @@ refreshDocsBtn.addEventListener("click", () => {
 });
 loadRecordsBtn.addEventListener("click", () => {
     void loadRecords();
+});
+deleteRecordsBtn.addEventListener("click", () => {
+    void deleteRecords();
 });
 schemaSelect.addEventListener("change", () => {
     void ensureSchemaCachedOrBootstrap(schemaSelect.value).then(() => {
@@ -217,6 +222,7 @@ async function uploadRecords() {
     const schemaName = schemaNameInput || schemaSelect.value;
     const textInput = document.getElementById("record-text").value;
     const fileInput = document.getElementById("record-file");
+    const mode = recordModeSelect?.value === "replace" ? "replace" : "append";
     if (!schemaName) {
         logStatus("Schema name is required.");
         return;
@@ -242,9 +248,26 @@ async function uploadRecords() {
             }
             payload = marshalRecords(schema, rows);
         }
-        logStatus(`Uploading ${payload.byteLength} bytes to schema ${schemaName}...`);
-        await client.uploadRecords(schemaName, payload);
-        logStatus("Upload complete.");
+        logStatus(`Uploading ${payload.byteLength} bytes to schema ${schemaName} (${mode})...`);
+        await client.uploadRecords(schemaName, payload, { mode });
+        logStatus(mode === "replace" ? `Replaced records for ${schemaName}.` : `Appended records to ${schemaName}.`);
+    }
+    catch (err) {
+        logError(err);
+    }
+}
+async function deleteRecords() {
+    const schemaNameInput = document.getElementById("record-schema").value.trim();
+    const schemaName = schemaNameInput || schemaSelect.value;
+    if (!schemaName) {
+        logStatus("Schema name is required.");
+        return;
+    }
+    try {
+        logStatus(`Deleting records for ${schemaName}...`);
+        await client.deleteRecords(schemaName);
+        renderRecords([]);
+        logStatus(`Records cleared for ${schemaName}.`);
     }
     catch (err) {
         logError(err);

@@ -1,5 +1,11 @@
 import { decodeBundle, ScrtBundleEnvelope } from "./protocol";
 
+type RecordWriteMode = "append" | "replace";
+
+interface UploadRecordsOptions {
+    mode?: RecordWriteMode;
+}
+
 function normalizeBase(url: string): string {
     const trimmed = url.trim();
     if (!trimmed) {
@@ -71,12 +77,22 @@ export class ScrtHttpClient {
         );
     }
 
-    async uploadRecords(schema: string, payload: Uint8Array): Promise<void> {
+    async uploadRecords(schema: string, payload: Uint8Array, options: UploadRecordsOptions = {}): Promise<void> {
+        const mode = options.mode ?? "append";
+        const query = mode === "replace" ? "?mode=replace" : "";
         await ensureOk(
-            await fetch(this.url(`/records/${encodeURIComponent(schema)}`), {
+            await fetch(this.url(`/records/${encodeURIComponent(schema)}${query}`), {
                 method: "POST",
                 headers: { "Content-Type": "application/x-scrt" },
                 body: payload as BodyInit,
+            }),
+        );
+    }
+
+    async deleteRecords(schema: string): Promise<void> {
+        await ensureOk(
+            await fetch(this.url(`/records/${encodeURIComponent(schema)}`), {
+                method: "DELETE",
             }),
         );
     }
@@ -114,10 +130,10 @@ export class ScrtHttpClient {
         return this.deleteSchema(name);
     }
 
-    async uploadDocumentRecords(doc: string, schema: string, payload: Uint8Array): Promise<void> {
+    async uploadDocumentRecords(doc: string, schema: string, payload: Uint8Array, options: UploadRecordsOptions = {}): Promise<void> {
         // kept for compatibility with older callers
         const target = schema || doc;
-        return this.uploadRecords(target, payload);
+        return this.uploadRecords(target, payload, options);
     }
 
     async fetchDocumentRecords(doc: string, schema: string): Promise<Uint8Array> {

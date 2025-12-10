@@ -171,9 +171,14 @@ and exposes the following routes:
 - `GET /schemas` → newline-delimited schema names (`text/plain`).
 - `POST /schemas/{name}` / `GET /schemas/{name}` / `DELETE ...` → raw SCRT
   DSL text for CRUD without JSON envelopes.
-- `POST /records/{schema}` → persist SCRT binary payloads exactly as
-  produced by the Go/TypeScript codecs.
+- `POST /records/{schema}` → append SCRT binary payloads (pass `?mode=replace` or use `PUT` to overwrite).
+- `PUT /records/{schema}` → replace the stored SCRT stream in one shot.
 - `GET /records/{schema}` → retrieve the stored SCRT stream.
+- `DELETE /records/{schema}` → remove the payload without deleting the schema.
+
+Appending lets you stream incremental inserts without re-uploading historical rows, while `mode=replace`
+(`PUT` or `POST ...?mode=replace`) swaps the entire blob atomically. Use `DELETE /records/{schema}` to clear a
+dataset but keep the schema definition around for future writes.
 - `GET /bundle?schema=Name` → compact binary envelope (`SCB1`)
   containing schema fingerprints, raw DSL, and the current payload.
 
@@ -212,8 +217,8 @@ done.
      unmarshalRecords,
    } from "./src";
 
-   const client = new ScrtHttpClient("http://localhost:8080");
-   const schemaName = "Message";
+  const client = new ScrtHttpClient("http://localhost:8080");
+  const schemaName = "Message";
    const schemaDsl = `@schema:Message
    @field MsgID uint64 auto_increment
    @field User  uint64
@@ -235,11 +240,11 @@ done.
   const messageSchema = parsed.schema(schemaName);
    if (!messageSchema) throw new Error("schema missing");
 
-   const payload = marshalRecords(messageSchema, [
-     { MsgID: 1n, User: 42n, Text: "hi" },
-     { MsgID: 2n, User: 7n, Text: "hola", Lang: "es" },
-   ]);
-  await client.uploadRecords(schemaName, payload);
+  const payload = marshalRecords(messageSchema, [
+    { MsgID: 1n, User: 42n, Text: "hi" },
+    { MsgID: 2n, User: 7n, Text: "hola", Lang: "es" },
+  ]);
+  await client.uploadRecords(schemaName, payload, { mode: "replace" });
 
    // R: fetch the binary rows back and decode them on the client side.
   const stored = await client.fetchRecords(schemaName);
@@ -247,11 +252,11 @@ done.
    console.log(decoded);
 
    // U: replace the payload with an updated set of rows (no JSON patches).
-   const updatedPayload = marshalRecords(messageSchema, [
-     ...decoded,
-     { MsgID: 3n, User: 999n, Text: "update" },
-   ]);
-  await client.uploadRecords(schemaName, updatedPayload);
+  const updatedPayload = marshalRecords(messageSchema, [
+    ...decoded,
+    { MsgID: 3n, User: 999n, Text: "update" },
+  ]);
+  await client.uploadRecords(schemaName, updatedPayload, { mode: "replace" });
 
    // Optional: pull the compact bundle (schema text + payload) in one go.
   const bundle = await client.fetchBundle(schemaName);
@@ -260,6 +265,9 @@ done.
    if (bundleSchema) {
      console.log(unmarshalRecords(bundle.payload, bundleSchema));
    }
+
+  // Optional cleanup: wipe the rows without touching the schema.
+  await client.deleteRecords(schemaName);
 
   // D: remove the schema (and its payload) when you are finished testing.
   await client.deleteSchema(schemaName);

@@ -16,6 +16,8 @@ const documentForm = document.getElementById("document-form") as HTMLFormElement
 const recordForm = document.getElementById("record-form") as HTMLFormElement;
 const refreshDocsBtn = document.getElementById("refresh-docs") as HTMLButtonElement;
 const loadRecordsBtn = document.getElementById("load-records") as HTMLButtonElement;
+const recordModeSelect = document.getElementById("record-mode") as HTMLSelectElement;
+const deleteRecordsBtn = document.getElementById("delete-records") as HTMLButtonElement;
 
 const client = new ScrtHttpClient(serverInput.value || undefined);
 const cache = new Map<string, CachedDocument>();
@@ -43,6 +45,10 @@ refreshDocsBtn.addEventListener("click", () => {
 
 loadRecordsBtn.addEventListener("click", () => {
     void loadRecords();
+});
+
+deleteRecordsBtn.addEventListener("click", () => {
+    void deleteRecords();
 });
 
 schemaSelect.addEventListener("change", () => {
@@ -239,6 +245,7 @@ async function uploadRecords(): Promise<void> {
     const schemaName = schemaNameInput || schemaSelect.value;
     const textInput = (document.getElementById("record-text") as HTMLTextAreaElement).value;
     const fileInput = document.getElementById("record-file") as HTMLInputElement;
+    const mode = recordModeSelect?.value === "replace" ? "replace" : "append";
     if (!schemaName) {
         logStatus("Schema name is required.");
         return;
@@ -263,9 +270,26 @@ async function uploadRecords(): Promise<void> {
             }
             payload = marshalRecords(schema, rows);
         }
-        logStatus(`Uploading ${payload.byteLength} bytes to schema ${schemaName}...`);
-        await client.uploadRecords(schemaName, payload);
-        logStatus("Upload complete.");
+        logStatus(`Uploading ${payload.byteLength} bytes to schema ${schemaName} (${mode})...`);
+        await client.uploadRecords(schemaName, payload, { mode });
+        logStatus(mode === "replace" ? `Replaced records for ${schemaName}.` : `Appended records to ${schemaName}.`);
+    } catch (err) {
+        logError(err);
+    }
+}
+
+async function deleteRecords(): Promise<void> {
+    const schemaNameInput = (document.getElementById("record-schema") as HTMLInputElement).value.trim();
+    const schemaName = schemaNameInput || schemaSelect.value;
+    if (!schemaName) {
+        logStatus("Schema name is required.");
+        return;
+    }
+    try {
+        logStatus(`Deleting records for ${schemaName}...`);
+        await client.deleteRecords(schemaName);
+        renderRecords([]);
+        logStatus(`Records cleared for ${schemaName}.`);
     } catch (err) {
         logError(err);
     }

@@ -52,11 +52,18 @@ export class ScrtHttpClient {
             method: "DELETE",
         }));
     }
-    async uploadRecords(schema, payload) {
-        await ensureOk(await fetch(this.url(`/records/${encodeURIComponent(schema)}`), {
+    async uploadRecords(schema, payload, options = {}) {
+        const mode = options.mode ?? "append";
+        const query = mode === "replace" ? "?mode=replace" : "";
+        await ensureOk(await fetch(this.url(`/records/${encodeURIComponent(schema)}${query}`), {
             method: "POST",
             headers: { "Content-Type": "application/x-scrt" },
             body: payload,
+        }));
+    }
+    async deleteRecords(schema) {
+        await ensureOk(await fetch(this.url(`/records/${encodeURIComponent(schema)}`), {
+            method: "DELETE",
         }));
     }
     async fetchRecords(schema) {
@@ -82,10 +89,10 @@ export class ScrtHttpClient {
     async deleteDocument(name) {
         return this.deleteSchema(name);
     }
-    async uploadDocumentRecords(doc, schema, payload) {
+    async uploadDocumentRecords(doc, schema, payload, options = {}) {
         // kept for compatibility with older callers
         const target = schema || doc;
-        return this.uploadRecords(target, payload);
+        return this.uploadRecords(target, payload, options);
     }
     async fetchDocumentRecords(doc, schema) {
         const target = schema || doc;

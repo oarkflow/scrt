@@ -67,7 +67,7 @@ async function runDemo(): Promise<void> {
         }
         const payload = marshalRecords(schema, sampleRows);
         pushLog(`Marshalled ${sampleRows.length} rows (${payload.byteLength} bytes).`);
-        await client.uploadRecords(schemaName, payload);
+        await client.uploadRecords(schemaName, payload, { mode: "replace" });
         pushLog("Records uploaded. Fetching bundle...");
         const bundle = await client.fetchBundle(schemaName);
         pushLog(`Bundle fetched (updated ${bundle.updatedAt.toISOString()}). Decoding payload...`);

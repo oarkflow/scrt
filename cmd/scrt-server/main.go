@@ -171,7 +171,7 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/x-scrt")
 		_, _ = w.Write(payload)
-	case http.MethodPost:
+	case http.MethodPost, http.MethodPut:
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -195,10 +195,29 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("invalid SCRT payload: %v", err), http.StatusBadRequest)
 			return
 		}
-		if err := s.registry.SetPayload(schemaName, body); err != nil {
+		replace := r.Method == http.MethodPut
+		if mode := strings.ToLower(r.URL.Query().Get("mode")); mode == "replace" {
+			replace = true
+		} else if mode == "append" {
+			replace = false
+		}
+		payload := append([]byte(nil), body...)
+		if !replace {
+			existing, _ := s.registry.Payload(schemaName)
+			merged, mergeErr := appendPayload(existing, body, sch)
+			if mergeErr != nil {
+				http.Error(w, fmt.Sprintf("append failed: %v", mergeErr), http.StatusBadRequest)
+				return
+			}
+			payload = merged
+		}
+		if err := s.registry.SetPayload(schemaName, payload); err != nil {
 			statusFromError(w, err)
 			return
 		}
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodDelete:
+		s.registry.ClearPayload(schemaName)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
@@ -244,6 +263,54 @@ func validatePayload(data []byte, sch *schema.Schema) error {
 		}
 		if !ok {
 			return nil
+		}
+	}
+}
+
+func appendPayload(existing, incoming []byte, sch *schema.Schema) ([]byte, error) {
+	if len(existing) == 0 {
+		return append([]byte(nil), incoming...), nil
+	}
+	buf := &bytes.Buffer{}
+	writer := codec.NewWriter(buf, sch, 1024)
+	row := codec.NewRow(sch)
+	var firstErr error
+	if err := copyPayload(writer, row, existing); err != nil {
+		firstErr = err
+	}
+	if firstErr == nil {
+		if err := copyPayload(writer, row, incoming); err != nil {
+			firstErr = err
+		}
+	}
+	closeErr := writer.Close()
+	if firstErr == nil {
+		firstErr = closeErr
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return buf.Bytes(), nil
+}
+
+func copyPayload(writer *codec.Writer, row codec.Row, payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	reader := codec.NewReader(bytes.NewReader(payload), row.Schema())
+	for {
+		ok, err := reader.ReadRow(row)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if err := writer.WriteRow(row); err != nil {
+			return err
 		}
 	}
 }

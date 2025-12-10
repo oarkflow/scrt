@@ -67,8 +67,14 @@
                     <input id="record-file" type="file" accept=".scrt,.txt,application/x-scrt,text/plain" />
                     <p class="hint">Upload `.scrt` text or binary payloads. Scopes like @User auto-select the target
                         schema.</p>
+                    <label for="record-mode">Write Mode</label>
+                    <select id="record-mode">
+                        <option value="append">Append (default)</option>
+                        <option value="replace">Replace (overwrite)</option>
+                    </select>
                     <div class="actions">
                         <button type="submit">Upload Records</button>
+                        <button type="button" id="delete-records">Delete Records</button>
                     </div>
                 </form>
             </div>

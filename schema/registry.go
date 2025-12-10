@@ -149,7 +149,21 @@ func (r *DocumentRegistry) SetPayload(schemaName string, data []byte) error {
 		return os.ErrNotExist
 	}
 	entry.payload = append([]byte(nil), data...)
+	entry.updated = time.Now().UTC()
 	return nil
+}
+
+// ClearPayload removes any stored rows for a schema but leaves the schema itself intact.
+func (r *DocumentRegistry) ClearPayload(schemaName string) {
+	if schemaName == "" {
+		return
+	}
+	r.mu.Lock()
+	if entry, ok := r.docs[schemaName]; ok {
+		entry.payload = nil
+		entry.updated = time.Now().UTC()
+	}
+	r.mu.Unlock()
 }
 
 // DeleteSchema removes a schema from the registry.
