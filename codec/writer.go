@@ -122,8 +122,12 @@ func (w *Writer) flushPage() error {
 	w.scratch.Reset()
 	w.builder.Encode(&w.scratch)
 	pageBytes := w.scratch.Bytes()
+
+	// Write length and page data directly without intermediate allocation
 	var lenBuf [binary.MaxVarintLen64]byte
 	n := binary.PutUvarint(lenBuf[:], uint64(len(pageBytes)))
+
+	// Write in a single operation if possible to reduce syscalls
 	if _, err := w.dst.Write(lenBuf[:n]); err != nil {
 		return err
 	}

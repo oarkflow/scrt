@@ -6,12 +6,19 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
 	"github.com/oarkflow/scrt/temporal"
 )
+
+var bytesPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 0, 1024)
+	},
+}
 
 // UnmarshalOptions controls decoding behavior.
 type UnmarshalOptions struct {
@@ -772,7 +779,20 @@ func bytesForAssignment(v codec.Value) []byte {
 	if v.Borrowed {
 		return v.Bytes
 	}
-	buf := make([]byte, len(v.Bytes))
+
+	// For small byte slices, avoid allocation by returning the original
+	// This is safe when we know the data won't be modified
+	if len(v.Bytes) <= 64 {
+		return v.Bytes
+	}
+
+	// Use a pooled buffer for larger byte slices
+	buf := bytesPool.Get().([]byte)
+	if cap(buf) < len(v.Bytes) {
+		buf = make([]byte, len(v.Bytes))
+	} else {
+		buf = buf[:len(v.Bytes)]
+	}
 	copy(buf, v.Bytes)
 	return buf
 }

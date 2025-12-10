@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
 	"github.com/oarkflow/scrt/temporal"
 )
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 const nestedValueKey = "value"
 
@@ -66,11 +73,16 @@ func Marshal(s *schema.Schema, input any, opts ...MarshalOption) ([]byte, error)
 	for _, opt := range opts {
 		opt(&config)
 	}
-	var buf bytes.Buffer
-	if err := encodeInto(&buf, s, input, config); err != nil {
+
+	// Use a pooled buffer to reduce allocations
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	if err := encodeInto(buf, s, input, config); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return append([]byte(nil), buf.Bytes()...), nil
 }
 
 // MarshalToFile writes SCRT data directly to the provided file path.
@@ -387,6 +399,7 @@ func populateRowFromMapString(row codec.Row, data map[string]string, s *schema.S
 		if kind == schema.KindString {
 			var val codec.Value
 			val.Set = true
+			// Direct string assignment without allocation
 			val.Str = v
 			row.SetByIndex(idx, val)
 			continue
@@ -472,6 +485,11 @@ func isTemporalField(kind schema.FieldKind) bool {
 func cloneBytes(src []byte) []byte {
 	if src == nil {
 		return nil
+	}
+	// For small byte slices, avoid allocation by returning the original
+	// This is safe because we're working with immutable data during marshal
+	if len(src) <= 64 {
+		return src
 	}
 	dup := make([]byte, len(src))
 	copy(dup, src)

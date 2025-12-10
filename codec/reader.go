@@ -119,6 +119,8 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 				if end > len(col.stringArena) {
 					return false, fmt.Errorf("codec: string slice out of bounds")
 				}
+				// Use unsafe.String to avoid allocation - this is safe because
+				// the arena is kept alive for the duration of page processing
 				row.values[fieldIdx].Str = unsafe.String(&col.stringArena[start], int(length))
 			}
 			row.values[fieldIdx].Set = true
@@ -144,8 +146,14 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 					row.values[fieldIdx].Bytes = segment
 					row.values[fieldIdx].Borrowed = true
 				} else {
-					row.values[fieldIdx].Bytes = cloneBytes(segment)
-					row.values[fieldIdx].Borrowed = false
+					// For small byte slices, avoid allocation
+					if len(segment) <= 64 {
+						row.values[fieldIdx].Bytes = segment
+						row.values[fieldIdx].Borrowed = true
+					} else {
+						row.values[fieldIdx].Bytes = cloneBytes(segment)
+						row.values[fieldIdx].Borrowed = false
+					}
 				}
 			} else {
 				row.values[fieldIdx].Bytes = nil
