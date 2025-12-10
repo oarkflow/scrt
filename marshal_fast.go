@@ -49,8 +49,9 @@ func buildFastStructEncoder(t reflect.Type, s *schema.Schema) *fastStructEncoder
 
 func makeFieldSetter(idx int, field reflect.StructField, schemaField schema.Field) (fieldSetter, bool) {
 	offset := field.Offset
-	switch schemaField.Kind {
-	case schema.KindUint64, schema.KindRef:
+	kind := schemaField.ValueKind()
+	switch kind {
+	case schema.KindUint64:
 		if field.Type.Kind() != reflect.Uint64 {
 			return nil, false
 		}

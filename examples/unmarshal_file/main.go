@@ -73,7 +73,7 @@ func main() {
 		if field.AutoIncrement {
 			fmt.Printf("    [auto_increment]\n")
 		}
-		if field.Kind == schema.KindRef {
+		if field.IsReference() {
 			fmt.Printf("    [ref -> %s.%s]\n", field.TargetSchema, field.TargetField)
 		}
 	}

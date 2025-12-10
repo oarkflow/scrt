@@ -171,7 +171,7 @@ func populateRowFromStruct(row codec.Row, value reflect.Value, s *schema.Schema)
 		if !fv.IsValid() {
 			continue
 		}
-		if err := assignValueToRow(row, idx, s.Fields[idx].Kind, fv); err != nil {
+		if err := assignValueToRow(row, idx, s.Fields[idx].ValueKind(), fv); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
 		}
 	}
@@ -233,7 +233,7 @@ func populateRowFromMapAny(row codec.Row, data map[string]any, s *schema.Schema)
 		if !ok || mv == nil {
 			continue
 		}
-		if err := assignAnyToRow(row, idx, field.Kind, mv); err != nil {
+		if err := assignAnyToRow(row, idx, field.ValueKind(), mv); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
 		}
 	}
@@ -246,7 +246,7 @@ func populateRowFromMapReflect(row codec.Row, value reflect.Value, s *schema.Sch
 		if !mv.IsValid() {
 			continue
 		}
-		if err := assignValueToRow(row, idx, field.Kind, mv); err != nil {
+		if err := assignValueToRow(row, idx, field.ValueKind(), mv); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
 		}
 	}
@@ -259,8 +259,8 @@ func populateRowFromMapBool(row codec.Row, data map[string]bool, s *schema.Schem
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindBool {
-			return fmt.Errorf("scrt: field %s expects bool, got kind %d", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindBool {
+			return fmt.Errorf("scrt: field %s expects bool, got kind %d", field.Name, field.ValueKind())
 		}
 		var val codec.Value
 		val.Set = true
@@ -296,20 +296,21 @@ func populateRowFromMapSigned[T signedInt](row codec.Row, data map[string]T, s *
 		if !ok {
 			continue
 		}
-		if field.Kind == schema.KindInt64 {
+		kind := field.ValueKind()
+		if kind == schema.KindInt64 {
 			var val codec.Value
 			val.Set = true
 			val.Int = int64(v)
 			row.SetByIndex(idx, val)
 			continue
 		}
-		if intStoredKind(field.Kind) {
-			if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(int64(v))); err != nil {
+		if intStoredKind(kind) {
+			if err := assignValueToRow(row, idx, kind, reflect.ValueOf(int64(v))); err != nil {
 				return fmt.Errorf("scrt: field %s: %w", field.Name, err)
 			}
 			continue
 		}
-		return fmt.Errorf("scrt: field %s expects int64, got kind %d", field.Name, field.Kind)
+		return fmt.Errorf("scrt: field %s expects int64, got kind %d", field.Name, kind)
 	}
 	return nil
 }
@@ -340,8 +341,8 @@ func populateRowFromMapUnsigned[T unsignedInt](row codec.Row, data map[string]T,
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindUint64 && field.Kind != schema.KindRef {
-			return fmt.Errorf("scrt: field %s expects uint64/ref, got kind %d", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindUint64 {
+			return fmt.Errorf("scrt: field %s expects uint64, got kind %d", field.Name, field.ValueKind())
 		}
 		var val codec.Value
 		val.Set = true
@@ -365,8 +366,8 @@ func populateRowFromMapFloat[T floatNumber](row codec.Row, data map[string]T, s 
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindFloat64 {
-			return fmt.Errorf("scrt: field %s expects float64, got kind %d", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindFloat64 {
+			return fmt.Errorf("scrt: field %s expects float64, got kind %d", field.Name, field.ValueKind())
 		}
 		var val codec.Value
 		val.Set = true
@@ -382,14 +383,15 @@ func populateRowFromMapString(row codec.Row, data map[string]string, s *schema.S
 		if !ok {
 			continue
 		}
-		if field.Kind == schema.KindString {
+		kind := field.ValueKind()
+		if kind == schema.KindString {
 			var val codec.Value
 			val.Set = true
 			val.Str = v
 			row.SetByIndex(idx, val)
 			continue
 		}
-		if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(v)); err != nil {
+		if err := assignValueToRow(row, idx, kind, reflect.ValueOf(v)); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
 		}
 	}
@@ -402,8 +404,8 @@ func populateRowFromMapBytes(row codec.Row, data map[string][]byte, s *schema.Sc
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindBytes {
-			return fmt.Errorf("scrt: field %s expects bytes, got kind %d", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindBytes {
+			return fmt.Errorf("scrt: field %s expects bytes, got kind %d", field.Name, field.ValueKind())
 		}
 		clone := cloneBytes(v)
 		var val codec.Value
@@ -420,10 +422,11 @@ func populateRowFromMapTime(row codec.Row, data map[string]time.Time, s *schema.
 		if !ok {
 			continue
 		}
-		if !isTemporalField(field.Kind) {
-			return fmt.Errorf("scrt: field %s expects temporal kind, got %d", field.Name, field.Kind)
+		kind := field.ValueKind()
+		if !isTemporalField(kind) {
+			return fmt.Errorf("scrt: field %s expects temporal kind, got %d", field.Name, kind)
 		}
-		if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(v)); err != nil {
+		if err := assignValueToRow(row, idx, kind, reflect.ValueOf(v)); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
 		}
 	}
@@ -436,10 +439,10 @@ func populateRowFromMapDuration(row codec.Row, data map[string]time.Duration, s 
 		if !ok {
 			continue
 		}
-		if field.Kind != schema.KindDuration {
-			return fmt.Errorf("scrt: field %s expects duration kind, got %d", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindDuration {
+			return fmt.Errorf("scrt: field %s expects duration kind, got %d", field.Name, field.ValueKind())
 		}
-		if err := assignValueToRow(row, idx, field.Kind, reflect.ValueOf(v)); err != nil {
+		if err := assignValueToRow(row, idx, field.ValueKind(), reflect.ValueOf(v)); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", field.Name, err)
 		}
 	}

@@ -48,6 +48,8 @@ func TestParseDefaultsAndTypes(t *testing.T) {
 @field Payload bytes default=0x4142
 @field Label string default="Hello World"
 @field Ref ref:Other:ID default=99
+@schema Other
+@field ID uint64
 `
 	doc, err := schema.Parse(strings.NewReader(src))
 	if err != nil {
@@ -84,6 +86,57 @@ func TestParseDefaultsAndTypes(t *testing.T) {
 		if !c.chk(f.Default) {
 			t.Fatalf("field %s default mismatch: %+v", c.name, f.Default)
 		}
+	}
+}
+
+func TestParseAutoIncrementDataFlexibility(t *testing.T) {
+	src := `@schema Message
+@field MsgID uint64 auto_increment
+@field User ref:User:ID
+@field Text string
+@field Lang string
+
+@schema User
+@field ID uint64 auto_increment
+@field Name string
+
+@Message
+1001, "Hello World!", "en"
+@Message
+@MsgID=77, 1002, "Hi again", "en"
+
+@User
+1001, "John Doe"
+`
+	doc, err := schema.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	messageRows, ok := doc.Records("Message")
+	if !ok {
+		t.Fatalf("missing Message records")
+	}
+	if len(messageRows) != 2 {
+		t.Fatalf("expected 2 message rows, got %d", len(messageRows))
+	}
+	if _, exists := messageRows[0]["MsgID"]; exists {
+		t.Fatalf("unexpected MsgID value for auto-increment row")
+	}
+	if user, ok := messageRows[0]["User"].(uint64); !ok || user != 1001 {
+		t.Fatalf("expected User=1001, got %+v", messageRows[0]["User"])
+	}
+	if msgID, ok := messageRows[1]["MsgID"].(uint64); !ok || msgID != 77 {
+		t.Fatalf("expected MsgID override 77, got %+v", messageRows[1]["MsgID"])
+	}
+	if user, ok := messageRows[1]["User"].(uint64); !ok || user != 1002 {
+		t.Fatalf("expected User=1002, got %+v", messageRows[1]["User"])
+	}
+	userRows, ok := doc.Records("User")
+	if !ok || len(userRows) != 1 {
+		t.Fatalf("expected 1 user row, got %d", len(userRows))
+	}
+	if id, ok := userRows[0]["ID"].(uint64); !ok || id != 1001 {
+		t.Fatalf("expected explicit user ID, got %+v", userRows[0]["ID"])
 	}
 }
 

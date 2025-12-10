@@ -35,6 +35,9 @@ type Field struct {
 	RawType       string
 	Attributes    []string
 	Default       *DefaultValue
+
+	ResolvedKind   FieldKind
+	pendingDefault string
 }
 
 // Schema represents a canonical schema definition extracted from the DSL.
@@ -99,4 +102,33 @@ func (s *Schema) FieldIndex(name string) (int, bool) {
 	})
 	idx, ok := s.fieldIndex[name]
 	return idx, ok
+}
+
+// FieldByName returns a pointer to the field definition for name, if present.
+func (s *Schema) FieldByName(name string) (*Field, bool) {
+	idx, ok := s.FieldIndex(name)
+	if !ok {
+		return nil, false
+	}
+	return &s.Fields[idx], true
+}
+
+// ValueKind reports the effective storage kind for the field.
+// Reference fields resolve to the target field's kind when available.
+func (f Field) ValueKind() FieldKind {
+	if f.Kind == KindRef {
+		if f.ResolvedKind != KindInvalid {
+			return f.ResolvedKind
+		}
+		return KindUint64
+	}
+	if f.ResolvedKind != KindInvalid {
+		return f.ResolvedKind
+	}
+	return f.Kind
+}
+
+// IsReference reports whether the field refers to another schema field.
+func (f Field) IsReference() bool {
+	return f.Kind == KindRef && f.TargetSchema != "" && f.TargetField != ""
 }

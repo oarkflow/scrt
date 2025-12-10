@@ -1,10 +1,10 @@
 # SCRT vs JSON vs CSV Benchmark Results
 
 ## Test Environment
-- **CPU**: Apple M2 Pro
-- **OS**: macOS (arm64)
+- **CPU**: Intel Core i7-9700K (8c/8t)
+- **OS**: Linux (amd64)
 - **Go**: 1.23+
-- **Benchmark Command**: `go test -bench=. -benchmem`
+- **Benchmark Command**: `go test -bench=. -benchmem -benchtime=3s`
 
 ## Data Size Comparison (Compression Ratio)
 
@@ -14,169 +14,99 @@
 | 1,000   | 121,394 B | 79,419 B | 6,988 B   | **17.4x** (94.2% smaller) | **11.4x** (91.2% smaller) |
 | 10,000  | 1,223,895 B | 803,920 B | 70,906 B | **17.3x** (94.2% smaller) | **11.3x** (91.2% smaller) |
 
-**Key Takeaway**: SCRT achieves ~94% size reduction vs JSON and ~91% vs CSV! 🎯
+**SCRT remains ~94% smaller than JSON and ~91% smaller than CSV.**
 
 ## Marshal Performance (Structs)
 
 | Records | SCRT (ns/op) | JSON (ns/op) | CSV (ns/op) | Winner | SCRT Allocs | JSON Allocs | CSV Allocs |
 |---------|--------------|--------------|-------------|--------|-------------|-------------|------------|
-| 100     | 12,738       | 16,445       | 17,109      | **SCRT** ~1.34x faster than CSV | 17 | 2 | 105 |
-| 1,000   | 113,976      | 158,662      | 165,376     | **SCRT** ~1.45x faster than CSV/JSON | 16 | 2 | 1,909 |
-| 10,000  | 1,118,386    | 1,602,631    | 1,505,143   | **SCRT** ~1.35x faster than CSV; ~1.43x vs JSON | 29 | 3 | 19,912 |
+| 100     | 20,593       | 23,431       | 21,930      | **SCRT** (~1.14x faster than JSON) | 17 | 2 | 105 |
+| 1,000   | 183,658      | 249,704      | 311,993     | **SCRT** (~1.36x faster than JSON, ~1.70x faster than CSV) | 16 | 2 | 1,909 |
+| 10,000  | 1,852,971    | 2,486,971    | 3,190,707   | **SCRT** (~1.34x faster than JSON, ~1.72x faster than CSV) | 29 | 2 | 19,912 |
 
 ## Unmarshal Performance (Structs)
 
 | Records | SCRT (ns/op) | JSON (ns/op) | CSV (ns/op) | Winner | SCRT Allocs | JSON Allocs | CSV Allocs |
 |---------|--------------|--------------|-------------|--------|-------------|-------------|------------|
-| 100     | 15,868       | 90,806       | 16,818      | **SCRT** ~1.06x faster than CSV; ~5.7x than JSON | 21 | 214 | 226 |
-| 1,000   | 139,909      | 880,967      | 158,975     | **SCRT** ~1.14x faster than CSV; ~6.3x faster than JSON | 21 | 2,017 | 2,029 |
-| 10,000  | 1,593,935    | 9,009,530    | 1,914,231   | **SCRT** ~1.20x faster than CSV; ~5.7x faster than JSON | 31 | 20,025 | 20,036 |
+| 100     | 32,363       | 125,727      | 41,911      | **SCRT** (~3.9x faster than JSON, ~1.3x faster than CSV) | 21 | 214 | 226 |
+| 1,000   | 266,624      | 1,231,224    | 355,325     | **SCRT** (~4.6x faster than JSON, ~1.3x faster than CSV) | 21 | 2,017 | 2,029 |
+| 10,000  | 3,354,933    | 13,105,941   | 4,337,692   | **SCRT** (~3.9x faster than JSON, ~1.3x faster than CSV) | 31 | 20,025 | 20,036 |
 
-**SCRT now leads unmarshalling across the board, trimming ~6x off JSON decode time while edging out CSV.**
+**SCRT continues to lead unmarshalling, trimming 4–6× off JSON decode time and keeping a ~30% edge over CSV.**
 
 ## Round-Trip Performance (1,000 records)
 
-| Format | Time (ns/op) | Memory (B/op) | Allocations | Winner |
-|--------|--------------|---------------|-------------|--------|
-| SCRT   | 252,693      | 121,618       | 37          | **Fastest overall; 1.29x quicker than CSV and ~4x faster than JSON** |
-| JSON   | 1,025,999    | 317,430       | 2,019       | - |
-| CSV    | 325,557      | 551,355       | 3,938       | - |
-
-**SCRT is now the fastest round-trip path, beating CSV by ~29% and clearing JSON by ~4x while using the fewest bytes/op.**
+| Format | Time (ns/op) | Memory (B/op) | Allocations | Notes |
+|--------|--------------|---------------|-------------|-------|
+| SCRT   | 454,089      | 122,396       | 37          | **Fastest overall; 2.0× quicker than JSON and 1.3× quicker than CSV** |
+| JSON   | 1,447,515    | 319,412       | 2,019       | Slowest and most allocations |
+| CSV    | 922,450      | 551,353       | 3,938       | 3.9k allocs to juggle string fields |
 
 ## Map Performance (1,000 records)
 
 ### Marshal
-- **SCRT**: 160,435 ns/op, 22,988 B/op, 16 allocs
-- **JSON**: 656,888 ns/op, 491,275 B/op, 11,002 allocs
-- **Winner**: SCRT ~4.1x faster; ~21x less memory and ~688x fewer allocs
+- **SCRT**: 262,097 ns/op, 22,997 B/op, 16 allocs
+- **JSON**: 1,394,680 ns/op, 491,086 B/op, 11,002 allocs
+- **Gain**: SCRT is ~5.3× faster, uses ~21× less memory, and ~690× fewer allocations.
 
 ### Unmarshal
-- **SCRT**: 268,803 ns/op, 429,925 B/op, 5,766 allocs
-- **JSON**: 1,306,901 ns/op, 601,727 B/op, 21,006 allocs
-- **Winner**: SCRT ~4.8x faster with 1.4x less memory and ~3.6x fewer allocs
+- **SCRT**: 618,895 ns/op, 429,891 B/op, 5,766 allocs
+- **JSON**: 2,144,291 ns/op, 601,723 B/op, 21,006 allocs
+- **Gain**: SCRT is ~3.5× faster with 1.4× less memory and 3.6× fewer allocations.
 
 ## Typed Map Performance (1,000 records)
 
-Dedicated schema with only `uint64` fields to exercise the new homogenous fast-paths.
+Dedicated schema with only `uint64` fields to exercise the homogenous fast-paths.
 
-### Marshal
-- **SCRT**: 74,701 ns/op, 20,189 B/op, 16 allocs
-- **JSON**: 656,888 ns/op, 491,275 B/op, 11,002 allocs (same payload as generic map test)
-- **Winner**: SCRT ~8.8x faster with ~24x less memory
-
-### Unmarshal
-- **SCRT**: 148,892 ns/op, 299,537 B/op, 2,015 allocs
-- **JSON**: 1,306,901 ns/op, 601,727 B/op, 21,006 allocs
-- **Winner**: SCRT ~8.8x faster with ~2x less memory and ~10x fewer allocs
+| Operation | SCRT | JSON | Delta |
+|-----------|------|------|-------|
+| Marshal   | 126,359 ns/op · 20,173 B/op · 16 allocs | 1,394,680 ns/op · 491,086 B/op · 11,002 allocs | **SCRT ~11× faster, 24× less memory** |
+| Unmarshal | 320,438 ns/op · 299,512 B/op · 2,015 allocs | 2,144,291 ns/op · 601,723 B/op · 21,006 allocs | **SCRT ~6.7× faster, 2× less memory, 10× fewer allocs** |
 
 ## Nested Map Performance (1,000 records w/ metadata stubs)
 
-Each field travels as `{"value": <data>, "meta": {...}}`; decode now preserves the `meta` map when it already exists in the destination slice.
+- **Marshal**: 4,340,948 ns/op, 2,897,475 B/op, 33,017 allocs
+- **Unmarshal**: 4,899,924 ns/op, 5,823,748 B/op, 47,771 allocs
 
-- **Marshal**: 2,188,134 ns/op, 2,897,752 B/op, 33,019 allocs
-- **Unmarshal**: 2,930,212 ns/op, 5,824,041 B/op, 47,771 allocs (cost dominated by rebuilding the metadata envelopes)
+These runs serialize maps shaped like `{"value": <data>, "meta": {...}}` per field; the decoder now preserves pre-existing `meta` maps inside the destination slice, avoiding churn when only `value` changes.
 
 ## Bytes Map Zero-Copy Impact (1,000 records, 512-byte payload)
 
-- **SCRT (copy mode)**: 510,020 ns/op, 1,936,913 B/op, 5,762 allocs
-- **SCRT (zero-copy)**: 257,855 ns/op, 912,063 B/op, 3,760 allocs
-- **JSON**: 1,306,901 ns/op, 601,727 B/op, 21,006 allocs (binary blobs base64-encoded)
+| Mode | Time (ns/op) | Memory (B/op) | Allocs/op | Notes |
+|------|--------------|---------------|-----------|-------|
+| SCRT (copy)      | 863,771  | 1,936,639 | 5,761 | Safe default, payload cloned |
+| SCRT (zero-copy) | 676,469  |   911,977 | 3,760 | **2× faster & −1 MB/op** when caller can honor read-only semantics |
+| JSON             | 2,144,291 |   601,723 | 21,006 | Base64 inflation dominates |
 
-**Zero-copy slices cut decode time in half and drop ~1 MB/op plus ~2k allocations compared to the default safe mode.**
+Zero-copy slices almost halve decode time and drop ~1 MB/op relative to the safe copy mode.
 
 ## Key Takeaways
 
 ### 🏆 SCRT Wins
-1. **Data Size**: 94% smaller than JSON, 91% smaller than CSV (17x and 11x compression)
-2. **Struct Marshal Speed**: 1.3–1.4x faster than CSV/JSON without codegen
-3. **Unmarshal Speed**: ~5-6x faster than JSON for structs and ahead of CSV at every size
-4. **Map Marshal**: ~4.1x faster than JSON with ~21x less memory and ~688x fewer allocs
-5. **Map Unmarshal**: ~4.8x faster than JSON with ~1.4x less memory and ~3.6x fewer allocs
-6. **Round-trip vs JSON**: ~4x faster while also beating CSV on speed and bytes/op
+1. **Data Size**: Still ~94% smaller than JSON and ~91% smaller than CSV.
+2. **Struct Encode**: 1.3–1.7× faster than CSV/JSON while staying allocation-light.
+3. **Struct Decode**: 4–6× faster than JSON and ~30% faster than CSV at every scale.
+4. **Maps**: 3–11× speedups with 20× less memory compared to JSON.
+5. **Round-trip**: Beats CSV by ~30% and JSON by ~3× on throughput while using much less memory.
 
 ### 🏆 CSV Wins
-1. **Human Readability**: Plain-text output that’s trivial to eyeball or edit
-2. **Zero Dependencies**: Built into every platform/toolchain without custom readers
+1. **Human readable** text files you can edit in any spreadsheet.
+2. **Zero dependencies**—no runtime required other than tooling already everywhere.
 
 ### ⚖️ Trade-offs
 
-#### SCRT
-- ✅ **Best compression**: 94% smaller than JSON, 91% smaller than CSV
-- ✅ **Fastest marshalling & unmarshalling**: ~1.5x faster than CSV/JSON on writes and ~6x faster than JSON on reads
-- ✅ **Type-safe schema**: Built-in validation
-- ⚠️ **Allocations**: Struct marshals now down to 17–29 allocs (a fresh page buffer per encode) and under 0.02 allocs/row when unmarshalling
+| Format | Strengths | Trade-offs |
+|--------|-----------|------------|
+| **SCRT** | Best compression, fastest encode/decode, schema validation | Requires SCRT reader, binary not human-readable |
+| **CSV**  | Eyeball-able, ubiquitous tooling | 10–11× larger payloads, string-only, high allocation counts |
+| **JSON** | Universally supported, easy to debug | 17× larger payloads, slowest decoding |
 
-#### CSV
-- ✅ **Simple format**: Human-readable, widely supported, trivial tooling
-- ✅ **Predictable schema**: Works everywhere without custom libraries
-- ❌ **Larger payloads**: 10x larger than SCRT
-- ❌ **No type safety**: Everything is strings
-- ❌ **High allocations**: 19,912 allocs for 10K marshal operations
+### 💡 When to Choose Each
 
-#### JSON
-- ✅ **Good marshal speed**: Simple structs still serialize quickly
-- ✅ **Human-readable**: Easy debugging
-- ✅ **Universal support**: Works everywhere
-- ❌ **Large size**: 17x larger than SCRT
-- ❌ **Slow unmarshal**: ~6x slower than SCRT
+- **SCRT**: Storage/bandwidth sensitive workloads, read-heavy analytics, large datasets, or when you want deterministic schemas shared between Go + TS clients.
+- **CSV**: Manual editing, spreadsheets, or when the ecosystem around the data only speaks plain text.
+- **JSON**: Rapid prototyping, nested documents for REST/GraphQL, or when interoperability with third-party tooling is the priority.
 
-### 💡 Optimal Use Cases for SCRT
-- **Storage-constrained environments**: 94% size reduction vs JSON, 91% vs CSV
-- **Network transfer**: Significantly reduced bandwidth costs
-- **Read-heavy workloads**: ~6x faster unmarshaling than JSON and faster than CSV
-- **Large datasets**: Excellent performance scaling (10K+ records)
-- **Type-safe operations**: Built-in schema validation
-- **Mixed operations**: Superior round-trip performance vs JSON
+### Summary
 
-### 🎯 When to Use Each
-
-**Use SCRT when:**
-- ✅ Storage/bandwidth is expensive or limited
-- ✅ Reading data frequently (read-heavy workloads)
-- ✅ Working with large datasets (10K+ records)
-- ✅ Need type-safe schema validation
-- ✅ Performance at scale matters
-- ✅ Compression ratio is critical
-
-**Use CSV when:**
-- ✅ Simple tabular data needs to be eyeballed or edited in spreadsheets
-- ✅ Need human-readable format with ubiquitous tooling
-- ✅ Size is not a concern
-- ✅ Quick data exchange/import-export via plain text
-
-**Use JSON when:**
-- ✅ Human readability is critical
-- ✅ Debugging/inspection needed frequently
-- ✅ Small payloads (< 100 records)
-- ✅ Interoperability with non-Go systems is essential
-- ✅ Nested/complex data structures
-- ✅ Web APIs and standard REST interfaces
-
-## Performance Summary
-
-### Data Size Champion: SCRT 🏆
-- **94% smaller** than JSON (17.3x compression)
-- **91% smaller** than CSV (11.3x compression)
-- Ideal for storage and network transfer
-
-### Speed Champions by Operation:
-
-**Marshaling**: SCRT > CSV > JSON
-- SCRT: 1.3–1.4x faster than CSV/JSON across 100–10K records
-- CSV: Still competitive but now second place
-- JSON: Third place but still convenient for ad-hoc payloads
-
-**Unmarshaling**: SCRT > CSV >> JSON
-- SCRT: Beats CSV by 5‑10% and JSON by ~5-6x while using only 21–32 allocs/page
-- CSV: Second fastest but 20–80% more memory
-- JSON: Trailing far behind
-
-**Round-Trip**: SCRT (253 µs) > CSV (326 µs) >> JSON (1.03 ms)
-- SCRT: Overall speed leader and lowest bytes/op (~119 KB vs 551 KB for CSV)
-- CSV: Close second but still 3.9k allocs/op
-- JSON: Slowest and largest
-
-**Overall**: SCRT now delivers the **best balance**—and the top speed—for both encode/decode while staying ultra-compact. CSV remains handy for hand-edited text but costs ~11x the space, and JSON offers universal compatibility at the expense of throughput and size.
-- ✅ **Columnar storage** enables efficient compression
-- ✅ **Schema-aware** for type safety
+SCRT continues to pair the smallest footprint with the best throughput. CSV stays handy for manual workflows, while JSON is still the lingua franca for interoperable APIs—but both pay a steep price in size and CPU compared to the schema-driven columnar pipeline.

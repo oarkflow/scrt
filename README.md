@@ -21,6 +21,32 @@ Within a schema:
 - Refs are encoded as unsigned ints referencing the primary key of the target schema.
 - Strings live in a deduplicated dictionary for the current page and are referenced via varint handles.
 
+## DSL Data Rows
+
+The data section that follows each `@schema` block now has a more forgiving parser:
+
+- **Auto-increment columns can be omitted**. If a field is marked `auto_increment`, you no longer have to supply a placeholder value—SCRT will assign the next sequence value automatically.
+- **Explicit overrides use named assignments**. Prefix any cell with `@FieldName=` to override the generated value (e.g. `@MsgID=9001`), or to backfill a sparse column while leaving earlier auto-increment fields empty.
+- **Reference fields store raw target keys**. The legacy `@ref:Schema:Field=value` tokens have been removed; simply emit the referenced primary key and SCRT will validate it against the schema metadata.
+
+Example:
+
+```text
+@schema:Message
+fields:
+  MsgID uint64 auto_increment
+  User  ref User.ID
+  Text  string
+  Lang  string default "en"
+
+@Message
+1001, "Hey there"             # MsgID auto-populates, Lang defaults to "en"
+@MsgID=77, 2001, "Override"   # Override auto-increment using @Field=value
+2002, "Hola", "es"            # Provide every field explicitly when needed
+```
+
+The same rules apply to every schema in the file, so datasets stay terse even when many reference or serial columns exist.
+
 ## Package Layout
 
 ```

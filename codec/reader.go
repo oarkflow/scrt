@@ -94,8 +94,9 @@ func (r *Reader) ReadRow(row Row) (bool, error) {
 
 	idx := r.pageState.cursor
 	for fieldIdx, field := range r.schema.Fields {
-		switch field.Kind {
-		case schema.KindUint64, schema.KindRef:
+		kind := field.ValueKind()
+		switch kind {
+		case schema.KindUint64:
 			row.values[fieldIdx].Uint = r.pageState.columns[fieldIdx].uints[idx]
 			row.values[fieldIdx].Str = ""
 			row.values[fieldIdx].Set = true

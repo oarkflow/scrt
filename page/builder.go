@@ -76,9 +76,10 @@ func normalizeRowLimit(rowLimit int) int {
 func newBuilderWithLimit(s *schema.Schema, rowLimit int) *Builder {
 	cols := make([]columnHandle, len(s.Fields))
 	for i, f := range s.Fields {
-		handle := columnHandle{kind: f.Kind}
-		switch f.Kind {
-		case schema.KindUint64, schema.KindRef:
+		valueKind := f.ValueKind()
+		handle := columnHandle{kind: valueKind}
+		switch valueKind {
+		case schema.KindUint64:
 			handle.uints = column.NewUint64Column(rowLimit)
 		case schema.KindString:
 			handle.strings = column.NewStringColumn(rowLimit)

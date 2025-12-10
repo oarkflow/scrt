@@ -93,7 +93,7 @@ func Parse(r io.Reader) (*Document, error) {
 
 			// Check if it's a data row (contains =) or section marker
 			if strings.Contains(line, "=") && currentDataSchema != "" {
-				// This is a data row like @ref:User:ID=1002, not a section marker
+				// This is a data row like @MsgID=1002, not a section marker
 				sch, exists := doc.Schemas[currentDataSchema]
 				if exists {
 					row, err := parseDataRow(line, sch)
@@ -135,6 +135,9 @@ func Parse(r io.Reader) (*Document, error) {
 		return nil, errors.New("schema name expected after @schema")
 	}
 	if err := finishCurrent(); err != nil {
+		return nil, err
+	}
+	if err := doc.finalize(); err != nil {
 		return nil, err
 	}
 	return doc, nil
@@ -198,18 +201,14 @@ func parseField(body string) (Field, error) {
 				field.AutoIncrement = true
 			case strings.HasPrefix(lower, "default="):
 				val := strings.TrimSpace(attr[len("default="):])
-				parsed, err := parseDefaultLiteral(field.Kind, val)
-				if err != nil {
+				if err := assignFieldDefault(&field, val); err != nil {
 					return Field{}, err
 				}
-				field.Default = parsed
 			case strings.HasPrefix(lower, "default:"):
 				val := strings.TrimSpace(attr[len("default:"):])
-				parsed, err := parseDefaultLiteral(field.Kind, val)
-				if err != nil {
+				if err := assignFieldDefault(&field, val); err != nil {
 					return Field{}, err
 				}
-				field.Default = parsed
 			default:
 				// keep normalized attribute for hashing/reference
 			}
@@ -276,107 +275,130 @@ func splitFieldAttributes(input string) []string {
 	return attrs
 }
 
+func assignFieldDefault(field *Field, literal string) error {
+	if field == nil {
+		return errors.New("nil field for default assignment")
+	}
+	if field.Kind == KindRef {
+		field.pendingDefault = literal
+		return nil
+	}
+	parsed, err := parseDefaultLiteral(field.Kind, literal)
+	if err != nil {
+		return err
+	}
+	field.Default = parsed
+	return nil
+}
+
 func parseDataRow(line string, sch *Schema) (map[string]interface{}, error) {
 	row := make(map[string]interface{})
-	fields := parseCSVLine(line)
-
+	rawFields := parseCSVLine(line)
+	valueTokensRemaining := countValueTokens(rawFields)
 	fieldIdx := 0
-	for _, rawField := range fields {
+
+	skipAuto := func(valuesRemaining int) {
+		for fieldIdx < len(sch.Fields) && sch.Fields[fieldIdx].AutoIncrement {
+			nonAuto := countNonAutoFields(sch.Fields, fieldIdx)
+			if valuesRemaining > nonAuto {
+				return
+			}
+			fieldIdx++
+		}
+	}
+
+	for _, rawField := range rawFields {
 		rawField = strings.TrimSpace(rawField)
 		if rawField == "" {
 			fieldIdx++
 			continue
 		}
 
-		// Check for explicit field assignment: @ref:User:ID=1001
 		if strings.HasPrefix(rawField, "@") {
-			parts := strings.SplitN(rawField[1:], "=", 2)
-			if len(parts) == 2 {
-				// Extract field name from ref syntax: ref:User:ID -> User
-				refParts := strings.Split(parts[0], ":")
-				var fieldName string
-				if len(refParts) >= 2 {
-					// For "ref:User:ID" we want "User" as the field name
-					fieldName = refParts[1]
-				} else {
-					fieldName = refParts[0]
-				}
-
-				field := findFieldByName(sch, fieldName)
-				if field == nil {
-					return nil, fmt.Errorf("field %s not found in schema", fieldName)
-				}
-
-				val, err := parseValue(parts[1], field)
-				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", fieldName, err)
-				}
-				row[fieldName] = val
-
-				// Move fieldIdx past this field
-				for i, f := range sch.Fields {
-					if f.Name == fieldName {
-						if i >= fieldIdx {
-							fieldIdx = i + 1
-						}
-						break
-					}
-				}
-				continue
+			idx, err := applyExplicitFieldAssignment(row, sch, rawField[1:])
+			if err != nil {
+				return nil, err
 			}
+			if idx >= 0 && idx >= fieldIdx {
+				fieldIdx = idx + 1
+			}
+			continue
 		}
 
-		// Process regular field value
+		valuesRemaining := valueTokensRemaining
+		skipAuto(valuesRemaining)
+
 		if fieldIdx >= len(sch.Fields) {
 			return nil, fmt.Errorf("too many fields in data row")
 		}
 
 		field := sch.Fields[fieldIdx]
-
-		// For auto-increment fields, check if value is numeric (explicit ID) or not
-		if field.AutoIncrement {
-			// If it's numeric, treat as explicit ID
-			if isNumeric(rawField) {
-				val, err := parseValue(rawField, &field)
-				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.Name, err)
-				}
-				row[field.Name] = val
-				fieldIdx++
-				continue
-			}
-			// If not numeric, skip this auto-increment field and try next
-			fieldIdx++
-			if fieldIdx >= len(sch.Fields) {
-				return nil, fmt.Errorf("too many fields in data row")
-			}
-			field = sch.Fields[fieldIdx]
-		}
-
 		val, err := parseValue(rawField, &field)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.Name, err)
 		}
 		row[field.Name] = val
 		fieldIdx++
+		valueTokensRemaining--
 	}
 
 	return row, nil
 }
 
-func isNumeric(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return false
+func countValueTokens(fields []string) int {
+	count := 0
+	for _, field := range fields {
+		trimmed := strings.TrimSpace(field)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "@") {
+			continue
+		}
+		count++
 	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			if r != '-' && r != '+' {
-				return false
-			}
+	return count
+}
+
+func countNonAutoFields(fields []Field, start int) int {
+	count := 0
+	for i := start; i < len(fields); i++ {
+		if !fields[i].AutoIncrement {
+			count++
 		}
 	}
-	return true
+	return count
+}
+
+func applyExplicitFieldAssignment(row map[string]interface{}, sch *Schema, expr string) (int, error) {
+	parts := strings.SplitN(strings.TrimSpace(expr), "=", 2)
+	if len(parts) != 2 {
+		return -1, fmt.Errorf("invalid field assignment %q", expr)
+	}
+	fieldName := normalizeAssignmentTarget(parts[0])
+	field := findFieldByName(sch, fieldName)
+	if field == nil {
+		return -1, fmt.Errorf("field %s not found in schema", fieldName)
+	}
+	val, err := parseValue(parts[1], field)
+	if err != nil {
+		return -1, fmt.Errorf("field %s: %w", fieldName, err)
+	}
+	row[fieldName] = val
+	idx, ok := sch.FieldIndex(fieldName)
+	if !ok {
+		return -1, nil
+	}
+	return idx, nil
+}
+
+func normalizeAssignmentTarget(token string) string {
+	trimmed := strings.TrimSpace(token)
+	refParts := strings.Split(trimmed, ":")
+	if len(refParts) >= 2 {
+		return refParts[1]
+	}
+	return refParts[0]
 }
 
 func findFieldByName(sch *Schema, name string) *Field {
@@ -423,8 +445,10 @@ func parseValue(raw string, field *Field) (interface{}, error) {
 		return raw, nil
 	}
 
-	switch field.Kind {
-	case KindUint64, KindRef:
+	kind := field.ValueKind()
+
+	switch kind {
+	case KindUint64:
 		var v uint64
 		_, err := fmt.Sscanf(raw, "%d", &v)
 		if err != nil {
@@ -507,6 +531,8 @@ func parseValue(raw string, field *Field) (interface{}, error) {
 		}
 		return val, nil
 
+	case KindRef:
+		return raw, fmt.Errorf("unresolved ref kind for value %q", raw)
 	default:
 		return raw, nil
 	}

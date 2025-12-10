@@ -47,8 +47,9 @@ func (w *Writer) WriteRow(row Row) error {
 		if !val.Set && field.Default != nil {
 			applyDefault(field, val)
 		}
-		switch field.Kind {
-		case schema.KindUint64, schema.KindRef:
+		kind := field.ValueKind()
+		switch kind {
+		case schema.KindUint64:
 			w.builder.AppendUint(idx, val.Uint)
 		case schema.KindString:
 			w.builder.AppendString(idx, val.Str)

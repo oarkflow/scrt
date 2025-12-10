@@ -11,8 +11,8 @@ Message
 @field Email string
 
 @Message
-1, @ref:User:ID=1001, "Hello World!", "en"
-@ref:User:ID=1002, "Bye World!", "en"
+1001, "Hello World!", "en"
+1002, "Bye World!", "en"
 @User
-"John", "john@example.com"
+1001, "John", "john@example.com"
 1002, "Jane", "jane@example.com"

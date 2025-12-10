@@ -213,7 +213,7 @@ func assignRowToStruct(row codec.Row, dst reflect.Value, s *schema.Schema) error
 		if !vals[idx].Set {
 			continue
 		}
-		if err := assignRowValue(fv, s.Fields[idx].Kind, vals[idx]); err != nil {
+		if err := assignRowValue(fv, s.Fields[idx].ValueKind(), vals[idx]); err != nil {
 			return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
 		}
 	}
@@ -274,7 +274,7 @@ func assignRowToMapAny(row codec.Row, dst map[string]any, s *schema.Schema) erro
 		if !vals[idx].Set {
 			continue
 		}
-		dst[field.Name] = valueFromRow(field.Kind, vals[idx])
+		dst[field.Name] = valueFromRow(field.ValueKind(), vals[idx])
 	}
 	return nil
 }
@@ -285,8 +285,8 @@ func assignRowToMapBool(row codec.Row, dst map[string]bool, s *schema.Schema) er
 		if !vals[idx].Set {
 			continue
 		}
-		if field.Kind != schema.KindBool {
-			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]bool", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindBool {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]bool", field.Name, field.ValueKind())
 		}
 		dst[field.Name] = vals[idx].Bool
 	}
@@ -304,7 +304,7 @@ func assignRowToNestedMap(row codec.Row, dst reflect.Value, s *schema.Schema) er
 		if !vals[idx].Set {
 			continue
 		}
-		base := valueFromRow(field.Kind, vals[idx])
+		base := valueFromRow(field.ValueKind(), vals[idx])
 		if base == nil {
 			continue
 		}
@@ -361,8 +361,9 @@ func assignRowToMapSigned[T signedInt](row codec.Row, dst map[string]T, s *schem
 		if !vals[idx].Set {
 			continue
 		}
-		if !intStoredKind(field.Kind) {
-			return fmt.Errorf("scrt: field %s kind %d cannot assign to signed map", field.Name, field.Kind)
+		kind := field.ValueKind()
+		if !intStoredKind(kind) {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to signed map", field.Name, kind)
 		}
 		dst[field.Name] = T(vals[idx].Int)
 	}
@@ -395,8 +396,8 @@ func assignRowToMapUnsigned[T unsignedInt](row codec.Row, dst map[string]T, s *s
 		if !vals[idx].Set {
 			continue
 		}
-		if field.Kind != schema.KindUint64 && field.Kind != schema.KindRef {
-			return fmt.Errorf("scrt: field %s kind %d cannot assign to unsigned map", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindUint64 {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to unsigned map", field.Name, field.ValueKind())
 		}
 		dst[field.Name] = T(vals[idx].Uint)
 	}
@@ -417,8 +418,8 @@ func assignRowToMapFloat[T floatNumber](row codec.Row, dst map[string]T, s *sche
 		if !vals[idx].Set {
 			continue
 		}
-		if field.Kind != schema.KindFloat64 {
-			return fmt.Errorf("scrt: field %s kind %d cannot assign to float map", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindFloat64 {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to float map", field.Name, field.ValueKind())
 		}
 		dst[field.Name] = T(vals[idx].Float)
 	}
@@ -432,7 +433,8 @@ func assignRowToMapString(row codec.Row, dst map[string]string, s *schema.Schema
 			continue
 		}
 		var formatted string
-		switch field.Kind {
+		kind := field.ValueKind()
+		switch kind {
 		case schema.KindString:
 			formatted = vals[idx].Str
 		case schema.KindDate:
@@ -444,7 +446,7 @@ func assignRowToMapString(row codec.Row, dst map[string]string, s *schema.Schema
 		case schema.KindDuration:
 			formatted = time.Duration(vals[idx].Int).String()
 		default:
-			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]string", field.Name, field.Kind)
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string]string", field.Name, kind)
 		}
 		dst[field.Name] = formatted
 	}
@@ -457,8 +459,8 @@ func assignRowToMapBytes(row codec.Row, dst map[string][]byte, s *schema.Schema)
 		if !vals[idx].Set {
 			continue
 		}
-		if field.Kind != schema.KindBytes {
-			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string][]byte", field.Name, field.Kind)
+		if field.ValueKind() != schema.KindBytes {
+			return fmt.Errorf("scrt: field %s kind %d cannot assign to map[string][]byte", field.Name, field.ValueKind())
 		}
 		dst[field.Name] = bytesForAssignment(vals[idx])
 	}
@@ -469,7 +471,7 @@ func assignRowToMapReflect(row codec.Row, dst reflect.Value, s *schema.Schema) e
 	elemType := dst.Type().Elem()
 	vals := row.Values()
 	for idx, field := range s.Fields {
-		base := valueFromRow(field.Kind, vals[idx])
+		base := valueFromRow(field.ValueKind(), vals[idx])
 		if base == nil {
 			continue
 		}
