@@ -12,6 +12,12 @@ const refreshDocsBtn = document.getElementById("refresh-docs");
 const loadRecordsBtn = document.getElementById("load-records");
 const recordModeSelect = document.getElementById("record-mode");
 const deleteRecordsBtn = document.getElementById("delete-records");
+const recordFieldInput = document.getElementById("record-field");
+const recordKeyInput = document.getElementById("record-key");
+const recordRowTextarea = document.getElementById("record-row");
+const loadRecordBtn = document.getElementById("load-record");
+const saveRecordBtn = document.getElementById("save-record");
+const deleteRecordRowBtn = document.getElementById("delete-record-row");
 const client = new ScrtHttpClient(serverInput.value || undefined);
 const cache = new Map();
 const embeddedDocuments = {
@@ -26,6 +32,10 @@ const embeddedDocuments = {
 2, 7, "hola", "es"
 `,
 };
+let currentSchemaName = null;
+let currentSchemaDef = null;
+let currentLookupField = null;
+let currentRows = [];
 serverInput.addEventListener("change", () => {
     client.setBaseUrl(serverInput.value);
 });
@@ -37,6 +47,18 @@ loadRecordsBtn.addEventListener("click", () => {
 });
 deleteRecordsBtn.addEventListener("click", () => {
     void deleteRecords();
+});
+recordsList.addEventListener("click", (event) => {
+    handleRecordListClick(event);
+});
+loadRecordBtn.addEventListener("click", () => {
+    void loadSingleRecord();
+});
+saveRecordBtn.addEventListener("click", () => {
+    void saveSingleRecord();
+});
+deleteRecordRowBtn.addEventListener("click", () => {
+    void deleteSingleRecord();
 });
 schemaSelect.addEventListener("change", () => {
     void ensureSchemaCachedOrBootstrap(schemaSelect.value).then(() => {
@@ -154,15 +176,26 @@ async function loadRecords() {
             temporalMode: "string",
             durationMode: "string",
         });
+        currentSchemaName = schemaName;
+        currentSchemaDef = schema;
+        currentLookupField = pickLookupField(schema);
+        if (currentLookupField && !recordFieldInput.value.trim()) {
+            recordFieldInput.value = currentLookupField;
+        }
+        currentRows = records;
         renderRecords(records);
         logStatus(`Decoded ${records.length} rows (updated ${bundle.updatedAt.toISOString()}).`);
     }
     catch (err) {
+        currentRows = [];
+        currentSchemaDef = null;
+        currentLookupField = null;
         renderRecords([]);
         logError(err);
     }
 }
 function renderRecords(rows) {
+    currentRows = rows;
     recordsList.innerHTML = "";
     if (!rows.length) {
         const li = document.createElement("li");
@@ -172,9 +205,33 @@ function renderRecords(rows) {
     }
     rows.forEach((row, idx) => {
         const li = document.createElement("li");
+        const header = document.createElement("div");
+        header.className = "record-row-header";
         const title = document.createElement("strong");
         title.textContent = `Row ${idx + 1}`;
-        li.append(title);
+        header.append(title);
+        const keyField = currentLookupField;
+        const keyValue = keyField ? normalizeKeyValue(row[keyField]) : null;
+        if (keyField && keyValue) {
+            const actions = document.createElement("div");
+            actions.className = "record-actions";
+            const editBtn = document.createElement("button");
+            editBtn.type = "button";
+            editBtn.textContent = "Edit";
+            editBtn.dataset.action = "edit-row";
+            editBtn.dataset.keyField = keyField;
+            editBtn.dataset.keyValue = keyValue;
+            const delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.textContent = "Delete";
+            delBtn.dataset.action = "delete-row";
+            delBtn.dataset.keyField = keyField;
+            delBtn.dataset.keyValue = keyValue;
+            delBtn.classList.add("danger");
+            actions.append(editBtn, delBtn);
+            header.append(actions);
+        }
+        li.append(header);
         const dl = document.createElement("dl");
         Object.entries(row).forEach(([key, value]) => {
             const dt = document.createElement("dt");
@@ -198,6 +255,98 @@ function formatValue(value) {
         return `bytes(${value.length})`;
     }
     return String(value);
+}
+function normalizeKeyValue(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    const asString = String(value).trim();
+    if (!asString) {
+        return null;
+    }
+    return asString;
+}
+function formatRowForEditor(row, schema) {
+    const cells = schema.fields.map((field) => formatCellLiteral(row[field.name], field.valueKind()));
+    return cells.join(", ").trim();
+}
+function formatCellLiteral(value, kind) {
+    if (value === null || value === undefined) {
+        return "";
+    }
+    const raw = String(value);
+    if (needsQuotedLiteral(kind)) {
+        return `"${escapeLiteral(raw)}"`;
+    }
+    return raw;
+}
+function needsQuotedLiteral(kind) {
+    switch (kind) {
+        case FieldKind.String:
+        case FieldKind.Bytes:
+        case FieldKind.TimestampTZ:
+        case FieldKind.Date:
+        case FieldKind.DateTime:
+        case FieldKind.Timestamp:
+        case FieldKind.Duration:
+            return true;
+        default:
+            return false;
+    }
+}
+function escapeLiteral(value) {
+    return value.replace(/"/g, "\"\"");
+}
+function pickLookupField(schema) {
+    const auto = schema.fields.find((field) => field.autoIncrement);
+    if (auto) {
+        return auto.name;
+    }
+    const uniqueAttr = schema.fields.find((field) => field.attributes.some((attr) => attr.toLowerCase() === "unique"));
+    if (uniqueAttr) {
+        return uniqueAttr.name;
+    }
+    const uuidAttr = schema.fields.find((field) => field.attributes.some((attr) => attr.toLowerCase().includes("uuid")));
+    if (uuidAttr) {
+        return uuidAttr.name;
+    }
+    const idSuffix = schema.fields.find((field) => field.name.toLowerCase().endsWith("id"));
+    if (idSuffix) {
+        return idSuffix.name;
+    }
+    return schema.fields.length ? schema.fields[0].name : null;
+}
+function handleRecordListClick(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLButtonElement)) {
+        return;
+    }
+    const action = target.dataset.action;
+    if (!action) {
+        return;
+    }
+    const field = target.dataset.keyField || currentLookupField || "";
+    const key = target.dataset.keyValue || "";
+    if (!field || !key) {
+        logStatus("Record is missing a lookup key.");
+        return;
+    }
+    recordFieldInput.value = field;
+    recordKeyInput.value = key;
+    if (action === "edit-row") {
+        void loadSingleRecord();
+    }
+    else if (action === "delete-row") {
+        void deleteSingleRecord();
+    }
+}
+function reloadRecordsIfCurrent(schemaName) {
+    if (schemaName && schemaName === schemaSelect.value) {
+        void loadRecords();
+    }
 }
 async function saveSchema() {
     const name = document.getElementById("document-name").value.trim();
@@ -273,6 +422,140 @@ async function deleteRecords() {
         logError(err);
     }
 }
+async function loadSingleRecord() {
+    const target = resolveRecordTarget();
+    if (!target) {
+        return;
+    }
+    try {
+        const schema = await schemaForName(target.schema);
+        currentSchemaDef = schema;
+        logStatus(`Loading ${target.schema} ${target.field}=${target.key}...`);
+        const envelope = await client.fetchRecordRow(target.schema, target.field, target.key);
+        const rowText = formatRowForEditor(envelope.row ?? {}, schema);
+        recordRowTextarea.value = rowText;
+        logStatus(`Loaded ${target.schema} ${target.field}=${target.key}. Edit the row and click Save.`);
+    }
+    catch (err) {
+        recordRowTextarea.value = "";
+        logError(err);
+    }
+}
+async function saveSingleRecord() {
+    const target = resolveRecordTarget({ allowEmptyKey: true });
+    if (!target) {
+        return;
+    }
+    let schema;
+    try {
+        schema = await schemaForName(target.schema);
+    }
+    catch (err) {
+        logError(err);
+        return;
+    }
+    let rows;
+    try {
+        rows = parseUserRows(recordRowTextarea.value, schema);
+    }
+    catch (err) {
+        logError(err);
+        return;
+    }
+    if (!rows.length) {
+        logStatus("Provide a SCRT row to save.");
+        return;
+    }
+    if (rows.length > 1) {
+        logStatus("Only one row can be edited at a time.");
+        return;
+    }
+    const row = rows[0];
+    if (!target.key) {
+        try {
+            logStatus(`Creating new ${target.schema} row...`);
+            await createSingleRecord(target.schema, schema, row);
+            recordRowTextarea.value = formatRowForEditor(row, schema);
+            reloadRecordsIfCurrent(target.schema);
+            logStatus(`Created ${target.schema} row (IDs assigned automatically).`);
+        }
+        catch (err) {
+            logError(err);
+        }
+        return;
+    }
+    row[target.field] = target.key;
+    let payload;
+    try {
+        payload = marshalRecords(schema, [row]);
+    }
+    catch (err) {
+        logError(err);
+        return;
+    }
+    try {
+        logStatus(`Saving ${target.schema} ${target.field}=${target.key}...`);
+        const envelope = await client.updateRecordRow(target.schema, target.field, target.key, payload);
+        recordRowTextarea.value = formatRowForEditor(envelope.row ?? row, schema);
+        reloadRecordsIfCurrent(target.schema);
+        logStatus(`Updated ${target.schema} ${target.field}=${target.key}.`);
+    }
+    catch (err) {
+        logError(err);
+    }
+}
+async function deleteSingleRecord() {
+    const target = resolveRecordTarget();
+    if (!target) {
+        return;
+    }
+    try {
+        logStatus(`Deleting ${target.schema} ${target.field}=${target.key}...`);
+        await client.deleteRecordRow(target.schema, target.field, target.key);
+        recordRowTextarea.value = "";
+        recordKeyInput.value = "";
+        reloadRecordsIfCurrent(target.schema);
+        logStatus(`Deleted ${target.schema} ${target.field}=${target.key}.`);
+    }
+    catch (err) {
+        logError(err);
+    }
+}
+async function createSingleRecord(schemaName, schema, row) {
+    const payload = marshalRecords(schema, [row]);
+    await client.uploadRecords(schemaName, payload, { mode: "append" });
+}
+async function schemaForName(schemaName) {
+    const cached = await ensureSchemaCachedOrBootstrap(schemaName);
+    const schema = cached.doc.schema(schemaName);
+    if (!schema) {
+        throw new Error(`Schema ${schemaName} is not available locally.`);
+    }
+    return schema;
+}
+function resolveRecordTarget(options = {}) {
+    const schemaNameInput = document.getElementById("record-schema").value.trim();
+    const schemaName = schemaNameInput || schemaSelect.value;
+    if (!schemaName) {
+        logStatus("Schema name is required.");
+        return null;
+    }
+    let field = recordFieldInput.value.trim();
+    if (!field && currentLookupField) {
+        field = currentLookupField;
+        recordFieldInput.value = currentLookupField;
+    }
+    if (!field) {
+        logStatus("Lookup field is required.");
+        return null;
+    }
+    const key = recordKeyInput.value.trim();
+    if (!key && !options.allowEmptyKey) {
+        logStatus("Lookup key is required.");
+        return null;
+    }
+    return { schema: schemaName, field, key };
+}
 async function ensureSchemaCachedOrBootstrap(name) {
     await ensureSchemaCached(name).catch(async (err) => {
         const bootstrapped = await maybeBootstrapSchema(name, err);
@@ -333,14 +616,9 @@ function parseUserRows(raw, schema) {
             }
             positional.push(token);
         });
-        const freeFieldCount = schema.fields.filter((field) => {
-            if (field.autoIncrement) {
-                return false;
-            }
-            return !named.has(field.name);
-        }).length;
-        if (positional.length > freeFieldCount) {
-            throw new Error(`Row has more positional values than available fields (${positional.length} > ${freeFieldCount})`);
+        const availableFieldCount = schema.fields.filter((field) => !named.has(field.name)).length;
+        if (positional.length > availableFieldCount) {
+            throw new Error(`Row has more positional values than available fields (${positional.length} > ${availableFieldCount})`);
         }
         let positionalIndex = 0;
         const row = {};
@@ -350,9 +628,6 @@ function parseUserRows(raw, schema) {
                 if (explicit) {
                     row[field.name] = coerceLiteral(field.valueKind(), explicit);
                 }
-                return;
-            }
-            if (field.autoIncrement) {
                 return;
             }
             if (positionalIndex >= positional.length) {

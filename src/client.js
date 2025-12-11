@@ -71,6 +71,25 @@ export class ScrtHttpClient {
         const buffer = await resp.arrayBuffer();
         return new Uint8Array(buffer);
     }
+    async fetchRecordRow(schema, field, key) {
+        const resp = await ensureOk(await fetch(this.url(`/records/${encodeURIComponent(schema)}/row/${encodeURIComponent(field)}/${encodeURIComponent(key)}`), {
+            headers: { Accept: "application/json" },
+        }));
+        return resp.json();
+    }
+    async updateRecordRow(schema, field, key, payload) {
+        const resp = await ensureOk(await fetch(this.url(`/records/${encodeURIComponent(schema)}/row/${encodeURIComponent(field)}/${encodeURIComponent(key)}`), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/x-scrt" },
+            body: payload,
+        }));
+        return resp.json();
+    }
+    async deleteRecordRow(schema, field, key) {
+        await ensureOk(await fetch(this.url(`/records/${encodeURIComponent(schema)}/row/${encodeURIComponent(field)}/${encodeURIComponent(key)}`), {
+            method: "DELETE",
+        }));
+    }
     async fetchBundle(schema) {
         const resp = await ensureOk(await fetch(this.url(`/bundle?schema=${encodeURIComponent(schema)}`)));
         const buffer = await resp.arrayBuffer();

@@ -3,6 +3,12 @@ type RecordWriteMode = "append" | "replace";
 interface UploadRecordsOptions {
     mode?: RecordWriteMode;
 }
+export interface RecordEnvelope {
+    schema: string;
+    field: string;
+    key: string;
+    row: Record<string, unknown>;
+}
 export declare class ScrtHttpClient {
     private baseUrl;
     constructor(baseUrl?: string);
@@ -15,6 +21,9 @@ export declare class ScrtHttpClient {
     uploadRecords(schema: string, payload: Uint8Array, options?: UploadRecordsOptions): Promise<void>;
     deleteRecords(schema: string): Promise<void>;
     fetchRecords(schema: string): Promise<Uint8Array>;
+    fetchRecordRow(schema: string, field: string, key: string): Promise<RecordEnvelope>;
+    updateRecordRow(schema: string, field: string, key: string, payload: Uint8Array): Promise<RecordEnvelope>;
+    deleteRecordRow(schema: string, field: string, key: string): Promise<void>;
     fetchBundle(schema: string): Promise<ScrtBundleEnvelope>;
     listDocuments(): Promise<string[]>;
     downloadDocument(name: string): Promise<string>;
@@ -24,4 +33,4 @@ export declare class ScrtHttpClient {
     fetchDocumentRecords(doc: string, schema: string): Promise<Uint8Array>;
     fetchDocumentBundle(doc: string, schema: string): Promise<ScrtBundleEnvelope>;
 }
-export { };
+export {};

@@ -1,0 +1,4 @@
+@schema:User
+@field ID uint64 serial
+@field Name string
+@field Email string

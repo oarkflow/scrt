@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,15 +12,21 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	scrt "github.com/oarkflow/scrt"
 	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
+	"github.com/oarkflow/scrt/storage"
+	"github.com/oarkflow/scrt/temporal"
 )
 
 const (
@@ -28,13 +35,15 @@ const (
 )
 
 type server struct {
-	registry *schema.DocumentRegistry
+	registry  *schema.DocumentRegistry
+	store     storage.Backend
+	schemaDir string
 }
 
 func allowCORS(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		// Allow common headers used by browsers and our client
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
 		// Expose specific headers to client-side JS if needed
@@ -49,16 +58,30 @@ func allowCORS(h http.Handler) http.Handler {
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
+	storageDir := flag.String("storage", "./data", "directory for SCRT snapshots")
+	schemaDir := flag.String("schemas", "./schemas", "directory for SCRT schema DSL files")
 	flag.Parse()
 
+	if err := os.MkdirAll(*schemaDir, 0o755); err != nil {
+		log.Fatalf("schema dir: %v", err)
+	}
 	registry := schema.NewDocumentRegistry()
+	backend, err := storage.NewSnapshotBackend(*storageDir)
+	if err != nil {
+		log.Fatalf("storage backend: %v", err)
+	}
 
-	srv := &server{registry: registry}
+	srv := &server{registry: registry, store: backend, schemaDir: *schemaDir}
+	if err := srv.bootstrapSchemas(); err != nil {
+		log.Fatalf("bootstrap schemas: %v", err)
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/schemas", srv.handleSchemas)
 	mux.HandleFunc("/schemas/", srv.handleSchema)
 	mux.HandleFunc("/records/", srv.handleRecords)
+	mux.HandleFunc("/snapshots", srv.handleSnapshots)
+	mux.HandleFunc("/ids/", srv.handleIDs)
 	mux.HandleFunc("/bundle", srv.handleBundle)
 
 	listener := allowCORS(noCache(mux))
@@ -98,17 +121,33 @@ func main() {
 }
 
 func (s *server) handleSchemas(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		summaries := s.registry.List()
+		sort.Slice(summaries, func(i, j int) bool {
+			return summaries[i].Name < summaries[j].Name
+		})
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		for _, summary := range summaries {
+			fmt.Fprintln(w, summary.Name)
+		}
+	case http.MethodPost:
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		schemaName, err := s.upsertSchemaBody("", raw)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Location", fmt.Sprintf("/schemas/%s", url.PathEscape(schemaName)))
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"schema": schemaName})
+	default:
 		methodNotAllowed(w)
-		return
-	}
-	summaries := s.registry.List()
-	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].Name < summaries[j].Name
-	})
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	for _, summary := range summaries {
-		fmt.Fprintln(w, summary.Name)
 	}
 }
 
@@ -133,21 +172,82 @@ func (s *server) handleSchema(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if len(bytes.TrimSpace(raw)) == 0 {
-			http.Error(w, "empty schema body", http.StatusBadRequest)
-			return
-		}
-		if _, err := s.registry.Upsert(name, raw, "api", time.Now().UTC()); err != nil {
+		schemaName, err := s.upsertSchemaBody(name, raw)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		w.Header().Set("Location", fmt.Sprintf("/schemas/%s", url.PathEscape(schemaName)))
 		w.WriteHeader(http.StatusCreated)
 	case http.MethodDelete:
 		s.registry.DeleteSchema(name)
+		if err := s.removeSchemaFile(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("remove schema file %s: %v", name, err)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	metas, err := s.store.ListMeta()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, metas)
+}
+
+func (s *server) handleIDs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/ids/")
+	if path == "" {
+		http.Error(w, "ids path must be /ids/{schema}/{field} or /ids/uuid", http.StatusBadRequest)
+		return
+	}
+	if strings.EqualFold(path, "uuid") || strings.EqualFold(path, "uuidv7") {
+		id, err := storage.GenerateUUIDv7()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"uuid": id})
+		return
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		http.Error(w, "ids path must be /ids/{schema}/{field}", http.StatusBadRequest)
+		return
+	}
+	schemaName, fieldName := parts[0], parts[1]
+	doc, _, _, err := s.registry.Snapshot(schemaName)
+	if err != nil {
+		statusFromError(w, err)
+		return
+	}
+	sch, ok := doc.Schema(schemaName)
+	if !ok {
+		http.Error(w, "unknown schema", http.StatusNotFound)
+		return
+	}
+	next, err := s.store.NextAutoValue(schemaName, sch, fieldName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"schema": schemaName,
+		"field":  fieldName,
+		"next":   next,
+	})
 }
 
 func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
@@ -162,11 +262,36 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "schema name required", http.StatusBadRequest)
 		return
 	}
+	if len(parts) >= 3 && strings.EqualFold(parts[1], "row") {
+		fieldName := parts[2]
+		var key string
+		if len(parts) > 3 {
+			raw := strings.Join(parts[3:], "/")
+			decoded, err := url.PathUnescape(raw)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid record key: %v", err), http.StatusBadRequest)
+				return
+			}
+			key = decoded
+		} else {
+			key = r.URL.Query().Get("key")
+		}
+		if key == "" {
+			http.Error(w, "record key required via path segment or ?key=", http.StatusBadRequest)
+			return
+		}
+		s.handleRecordRow(w, r, schemaName, fieldName, key)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		payload, ok := s.registry.Payload(schemaName)
-		if !ok {
-			http.NotFound(w, r)
+		payload, err := s.store.LoadPayload(schemaName)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-scrt")
@@ -201,15 +326,28 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		} else if mode == "append" {
 			replace = false
 		}
-		payload := append([]byte(nil), body...)
+		payloadWithIDs, err := s.populateAutoValues(schemaName, sch, body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("auto-populate failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		payload := append([]byte(nil), payloadWithIDs...)
 		if !replace {
-			existing, _ := s.registry.Payload(schemaName)
+			existing, err := s.store.LoadPayload(schemaName)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			merged, mergeErr := appendPayload(existing, body, sch)
 			if mergeErr != nil {
 				http.Error(w, fmt.Sprintf("append failed: %v", mergeErr), http.StatusBadRequest)
 				return
 			}
 			payload = merged
+		}
+		if _, err := s.store.Persist(schemaName, sch, payload, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+			http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
+			return
 		}
 		if err := s.registry.SetPayload(schemaName, payload); err != nil {
 			statusFromError(w, err)
@@ -218,6 +356,10 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
 		s.registry.ClearPayload(schemaName)
+		if err := s.store.Delete(schemaName); err != nil && !errors.Is(err, os.ErrNotExist) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
@@ -244,10 +386,392 @@ func (s *server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown schema", http.StatusNotFound)
 		return
 	}
-	payload, _ := s.registry.Payload(schemaName)
+	payload, err := s.store.LoadPayload(schemaName)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := writeBundle(w, doc, sch, raw, payload, schemaName, schemaName, updated); err != nil {
 		log.Printf("write bundle: %v", err)
 	}
+}
+
+func (s *server) handleRecordRow(w http.ResponseWriter, r *http.Request, schemaName, fieldName, rawKey string) {
+	if fieldName == "" {
+		http.Error(w, "field name required", http.StatusBadRequest)
+		return
+	}
+	doc, _, _, err := s.registry.Snapshot(schemaName)
+	if err != nil {
+		statusFromError(w, err)
+		return
+	}
+	sch, ok := doc.Schema(schemaName)
+	if !ok {
+		http.Error(w, "unknown schema", http.StatusNotFound)
+		return
+	}
+	fieldIdx, ok := sch.FieldIndex(fieldName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("schema %s lacks field %s", schemaName, fieldName), http.StatusBadRequest)
+		return
+	}
+	key, err := parseRecordKey(&sch.Fields[fieldIdx], rawKey)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	payload, err := s.store.LoadPayload(schemaName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(payload) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		record, found, err := findRecordRow(payload, sch, fieldIdx, key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"schema": schemaName,
+			"field":  fieldName,
+			"key":    rawKey,
+			"row":    record,
+		})
+	case http.MethodDelete:
+		updated, found, err := rewriteRecord(payload, sch, fieldIdx, key, nil, rowEditDelete)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := s.store.Persist(schemaName, sch, updated, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+			http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := s.registry.SetPayload(schemaName, updated); err != nil {
+			statusFromError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodPatch, http.MethodPut:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("read row payload: %v", err), http.StatusBadRequest)
+			return
+		}
+		if len(body) == 0 {
+			http.Error(w, "row payload required", http.StatusBadRequest)
+			return
+		}
+		rowMap, err := parseSingleRowPayload(body, sch)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("decode row: %v", err), http.StatusBadRequest)
+			return
+		}
+		enforceKeyValue(rowMap, sch.Fields[fieldIdx], key)
+		replacement, err := scrt.Marshal(sch, []map[string]any{rowMap})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("marshal row failed: %v", err), http.StatusBadRequest)
+			return
+		}
+		updated, found, err := rewriteRecord(payload, sch, fieldIdx, key, replacement, rowEditReplace)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := s.store.Persist(schemaName, sch, updated, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+			http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := s.registry.SetPayload(schemaName, updated); err != nil {
+			statusFromError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"schema": schemaName,
+			"field":  fieldName,
+			"key":    rawKey,
+			"row":    rowMap,
+		})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+type rowEditOp int
+
+const (
+	rowEditReplace rowEditOp = iota
+	rowEditDelete
+)
+
+type recordKey struct {
+	kind      schema.FieldKind
+	fieldName string
+	raw       string
+	uintVal   uint64
+	intVal    int64
+	strVal    string
+	boolVal   bool
+	floatVal  float64
+}
+
+func parseRecordKey(field *schema.Field, raw string) (recordKey, error) {
+	key := recordKey{kind: field.ValueKind(), fieldName: field.Name, raw: raw}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return key, fmt.Errorf("record key for %s cannot be empty", field.Name)
+	}
+	switch key.kind {
+	case schema.KindUint64, schema.KindRef:
+		val, err := strconv.ParseUint(trimmed, 10, 64)
+		if err != nil {
+			return key, fmt.Errorf("invalid numeric key for %s: %w", field.Name, err)
+		}
+		key.uintVal = val
+	case schema.KindInt64:
+		val, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return key, fmt.Errorf("invalid integer key for %s: %w", field.Name, err)
+		}
+		key.intVal = val
+	case schema.KindFloat64:
+		val, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return key, fmt.Errorf("invalid float key for %s: %w", field.Name, err)
+		}
+		key.floatVal = val
+	case schema.KindBool:
+		val, err := strconv.ParseBool(trimmed)
+		if err != nil {
+			return key, fmt.Errorf("invalid bool key for %s: %w", field.Name, err)
+		}
+		key.boolVal = val
+	case schema.KindString:
+		key.strVal = trimmed
+	case schema.KindTimestampTZ:
+		canonical, err := temporal.CanonicalTimestampTZ(trimmed)
+		if err != nil {
+			return key, fmt.Errorf("invalid timestamptz key for %s: %w", field.Name, err)
+		}
+		key.strVal = canonical
+	case schema.KindDate:
+		t, err := temporal.ParseDate(trimmed)
+		if err != nil {
+			return key, fmt.Errorf("invalid date key for %s: %w", field.Name, err)
+		}
+		key.intVal = temporal.EncodeDate(t)
+	case schema.KindDateTime:
+		t, err := temporal.ParseDateTime(trimmed)
+		if err != nil {
+			return key, fmt.Errorf("invalid datetime key for %s: %w", field.Name, err)
+		}
+		key.intVal = temporal.EncodeInstant(t)
+	case schema.KindTimestamp:
+		t, err := temporal.ParseTimestamp(trimmed)
+		if err != nil {
+			return key, fmt.Errorf("invalid timestamp key for %s: %w", field.Name, err)
+		}
+		key.intVal = temporal.EncodeInstant(t)
+	case schema.KindDuration:
+		dur, err := temporal.ParseDuration(trimmed)
+		if err != nil {
+			return key, fmt.Errorf("invalid duration key for %s: %w", field.Name, err)
+		}
+		key.intVal = int64(dur)
+	default:
+		return key, fmt.Errorf("field %s (kind %d) is not supported for record lookups", field.Name, field.ValueKind())
+	}
+	return key, nil
+}
+
+func (k recordKey) matches(val codec.Value) bool {
+	if !val.Set {
+		return false
+	}
+	switch k.kind {
+	case schema.KindUint64, schema.KindRef:
+		return val.Uint == k.uintVal
+	case schema.KindInt64, schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
+		return val.Int == k.intVal
+	case schema.KindFloat64:
+		return val.Float == k.floatVal
+	case schema.KindBool:
+		return val.Bool == k.boolVal
+	case schema.KindString, schema.KindTimestampTZ:
+		return val.Str == k.strVal
+	default:
+		return false
+	}
+}
+
+func parseSingleRowPayload(data []byte, sch *schema.Schema) (map[string]any, error) {
+	reader := codec.NewReader(bytes.NewReader(data), sch)
+	row := codec.NewRow(sch)
+	ok, err := reader.ReadRow(row)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("row payload contained no data")
+	}
+	result := rowToMap(row, sch)
+	second, err := reader.ReadRow(row)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if second {
+		return nil, fmt.Errorf("only single-row payloads are supported")
+	}
+	return result, nil
+}
+
+func enforceKeyValue(row map[string]any, field schema.Field, key recordKey) {
+	if row == nil {
+		return
+	}
+	switch field.ValueKind() {
+	case schema.KindUint64, schema.KindRef:
+		row[field.Name] = key.uintVal
+	case schema.KindInt64:
+		row[field.Name] = key.intVal
+	case schema.KindFloat64:
+		row[field.Name] = key.floatVal
+	case schema.KindBool:
+		row[field.Name] = key.boolVal
+	case schema.KindString, schema.KindTimestampTZ:
+		row[field.Name] = key.strVal
+	case schema.KindDate:
+		row[field.Name] = temporal.FormatDate(temporal.DecodeDate(key.intVal))
+	case schema.KindDateTime, schema.KindTimestamp:
+		row[field.Name] = temporal.FormatInstant(temporal.DecodeInstant(key.intVal))
+	case schema.KindDuration:
+		row[field.Name] = time.Duration(key.intVal).String()
+	}
+}
+
+func findRecordRow(payload []byte, sch *schema.Schema, fieldIdx int, key recordKey) (map[string]any, bool, error) {
+	reader := codec.NewReader(bytes.NewReader(payload), sch)
+	row := codec.NewRow(sch)
+	matchCount := 0
+	for {
+		ok, err := reader.ReadRow(row)
+		if errors.Is(err, io.EOF) || !ok {
+			break
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		values := row.Values()
+		if key.matches(values[fieldIdx]) {
+			matchCount++
+			if matchCount > 1 {
+				return nil, false, fmt.Errorf("multiple rows match %s=%q", key.fieldName, key.raw)
+			}
+			return rowToMap(row, sch), true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func rewriteRecord(payload []byte, sch *schema.Schema, fieldIdx int, key recordKey, replacement []byte, op rowEditOp) ([]byte, bool, error) {
+	if op == rowEditReplace && len(replacement) == 0 {
+		return nil, false, fmt.Errorf("replacement payload required for record update")
+	}
+	reader := codec.NewReader(bytes.NewReader(payload), sch)
+	buf := &bytes.Buffer{}
+	writer := codec.NewWriter(buf, sch, 1024)
+	row := codec.NewRow(sch)
+	matchCount := 0
+	for {
+		ok, err := reader.ReadRow(row)
+		if errors.Is(err, io.EOF) || !ok {
+			break
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		values := row.Values()
+		if key.matches(values[fieldIdx]) {
+			matchCount++
+			if matchCount > 1 {
+				return nil, false, fmt.Errorf("multiple rows match %s=%q", key.fieldName, key.raw)
+			}
+			if op == rowEditDelete {
+				continue
+			}
+			if err := copyPayload(writer, row, replacement); err != nil {
+				return nil, false, err
+			}
+			continue
+		}
+		if err := writer.WriteRow(row); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, false, err
+	}
+	if matchCount == 0 {
+		return nil, false, nil
+	}
+	return buf.Bytes(), true, nil
+}
+
+func rowToMap(row codec.Row, sch *schema.Schema) map[string]any {
+	values := row.Values()
+	out := make(map[string]any)
+	for idx, field := range sch.Fields {
+		val := values[idx]
+		if !val.Set {
+			continue
+		}
+		switch field.ValueKind() {
+		case schema.KindUint64, schema.KindRef:
+			out[field.Name] = val.Uint
+		case schema.KindInt64:
+			out[field.Name] = val.Int
+		case schema.KindFloat64:
+			out[field.Name] = val.Float
+		case schema.KindBool:
+			out[field.Name] = val.Bool
+		case schema.KindString, schema.KindTimestampTZ:
+			out[field.Name] = val.Str
+		case schema.KindBytes:
+			buf := append([]byte(nil), val.Bytes...)
+			out[field.Name] = buf
+		case schema.KindDate:
+			out[field.Name] = temporal.FormatDate(temporal.DecodeDate(val.Int))
+		case schema.KindDateTime, schema.KindTimestamp:
+			out[field.Name] = temporal.FormatInstant(temporal.DecodeInstant(val.Int))
+		case schema.KindDuration:
+			out[field.Name] = time.Duration(val.Int).String()
+		default:
+			out[field.Name] = val.Str
+		}
+	}
+	return out
 }
 
 func validatePayload(data []byte, sch *schema.Schema) error {
@@ -406,6 +930,182 @@ func fingerprintDocument(doc *schema.Document) uint64 {
 		hash *= fnvPrime
 	}
 	return hash
+}
+
+func writeJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func canonicalSchemaName(doc *schema.Document) string {
+	if doc == nil {
+		return ""
+	}
+	for name := range doc.Schemas {
+		return name
+	}
+	return ""
+}
+
+func (s *server) upsertSchemaBody(name string, raw []byte) (string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", fmt.Errorf("empty schema body")
+	}
+	if s.registry == nil {
+		return "", fmt.Errorf("schema registry unavailable")
+	}
+	doc, err := s.registry.Upsert(name, raw, "api", time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	schemaName := canonicalSchemaName(doc)
+	if schemaName == "" {
+		schemaName = name
+	}
+	if err := s.saveSchemaFile(schemaName, raw); err != nil {
+		return "", fmt.Errorf("persist schema: %w", err)
+	}
+	return schemaName, nil
+}
+
+func (s *server) saveSchemaFile(name string, raw []byte) error {
+	if s.schemaDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(s.schemaDir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(s.schemaDir, fmt.Sprintf("%s.scrt", name))
+	return os.WriteFile(path, raw, 0o644)
+}
+
+func (s *server) removeSchemaFile(name string) error {
+	if s.schemaDir == "" {
+		return nil
+	}
+	path := filepath.Join(s.schemaDir, fmt.Sprintf("%s.scrt", name))
+	return os.Remove(path)
+}
+
+func (s *server) bootstrapSchemas() error {
+	if s == nil || s.registry == nil {
+		return fmt.Errorf("schema registry unavailable")
+	}
+	if s.schemaDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(s.schemaDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if !strings.EqualFold(filepath.Ext(entry.Name()), ".scrt") {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		path := filepath.Join(s.schemaDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("schema bootstrap: read %s: %v", path, err)
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("schema bootstrap: stat %s: %v", path, err)
+			continue
+		}
+		if _, err := s.registry.Upsert(name, data, path, info.ModTime()); err != nil {
+			log.Printf("schema bootstrap: load %s: %v", path, err)
+			continue
+		}
+		log.Printf("Loaded schema %s from %s", name, path)
+	}
+	return nil
+}
+
+func (s *server) populateAutoValues(schemaName string, sch *schema.Schema, payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return payload, nil
+	}
+	autoFields := make([]int, 0)
+	uuidFields := make([]int, 0)
+	for idx, field := range sch.Fields {
+		if field.AutoIncrement {
+			autoFields = append(autoFields, idx)
+		}
+		if requiresUUID(field) {
+			uuidFields = append(uuidFields, idx)
+		}
+	}
+	if len(autoFields) == 0 && len(uuidFields) == 0 {
+		return payload, nil
+	}
+	reader := codec.NewReader(bytes.NewReader(payload), sch)
+	var buf bytes.Buffer
+	writer := codec.NewWriter(&buf, sch, 1024)
+	row := codec.NewRow(sch)
+	for {
+		ok, err := reader.ReadRow(row)
+		if errors.Is(err, io.EOF) || !ok {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		values := row.Values()
+		for _, idx := range autoFields {
+			current := values[idx]
+			if current.Set && current.Uint != 0 {
+				continue
+			}
+			next, err := s.store.NextAutoValue(schemaName, sch, sch.Fields[idx].Name)
+			if err != nil {
+				return nil, err
+			}
+			current.Uint = next
+			current.Set = true
+			current.Str = ""
+			row.SetByIndex(idx, current)
+		}
+		for _, idx := range uuidFields {
+			current := values[idx]
+			if current.Set && current.Str != "" {
+				continue
+			}
+			uuid, err := storage.GenerateUUIDv7()
+			if err != nil {
+				return nil, err
+			}
+			current.Str = uuid
+			current.Set = true
+			row.SetByIndex(idx, current)
+		}
+		if err := writer.WriteRow(row); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func requiresUUID(field schema.Field) bool {
+	if field.Kind != schema.KindString {
+		return false
+	}
+	if field.HasAttribute("uuid") || field.HasAttribute("uuidv7") || field.HasAttribute("unique") {
+		return true
+	}
+	return false
 }
 
 func statusFromError(w http.ResponseWriter, err error) {

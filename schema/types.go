@@ -3,6 +3,7 @@ package schema
 import (
 	"hash/fnv"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -131,4 +132,18 @@ func (f Field) ValueKind() FieldKind {
 // IsReference reports whether the field refers to another schema field.
 func (f Field) IsReference() bool {
 	return f.Kind == KindRef && f.TargetSchema != "" && f.TargetField != ""
+}
+
+// HasAttribute reports whether the field declaration included the attribute label.
+func (f Field) HasAttribute(label string) bool {
+	if label == "" {
+		return false
+	}
+	lower := strings.ToLower(label)
+	for _, attr := range f.Attributes {
+		if attr == lower {
+			return true
+		}
+	}
+	return false
 }

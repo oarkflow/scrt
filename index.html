@@ -77,6 +77,28 @@
                         <button type="button" id="delete-records">Delete Records</button>
                     </div>
                 </form>
+                <div class="record-editor">
+                    <h3>Single Record Editor</h3>
+                    <div class="grid-2">
+                        <div class="field">
+                            <label for="record-field">Lookup Field</label>
+                            <input id="record-field" type="text" placeholder="ID" />
+                        </div>
+                        <div class="field">
+                            <label for="record-key">Lookup Key</label>
+                            <input id="record-key" type="text" placeholder="1002" />
+                        </div>
+                    </div>
+                    <label for="record-row">Record Row (SCRT)</label>
+                    <textarea id="record-row" placeholder='1002, "Jane Smith", "jane@example.com"'></textarea>
+                    <p class="hint">Provide a single SCRT row (comma separated, quote strings). Leave the key blank to
+                        insert a new row with auto IDs.</p>
+                    <div class="actions">
+                        <button type="button" id="load-record">Load Row</button>
+                        <button type="button" id="save-record">Save Changes</button>
+                        <button type="button" id="delete-record-row" class="danger">Delete Row</button>
+                    </div>
+                </div>
             </div>
         </section>
     </main>

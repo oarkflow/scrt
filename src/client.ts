@@ -6,6 +6,13 @@ interface UploadRecordsOptions {
     mode?: RecordWriteMode;
 }
 
+export interface RecordEnvelope {
+    schema: string;
+    field: string;
+    key: string;
+    row: Record<string, unknown>;
+}
+
 function normalizeBase(url: string): string {
     const trimmed = url.trim();
     if (!trimmed) {
@@ -103,6 +110,49 @@ export class ScrtHttpClient {
         );
         const buffer = await resp.arrayBuffer();
         return new Uint8Array(buffer);
+    }
+
+    async fetchRecordRow(schema: string, field: string, key: string): Promise<RecordEnvelope> {
+        const resp = await ensureOk(
+            await fetch(
+                this.url(
+                    `/records/${encodeURIComponent(schema)}/row/${encodeURIComponent(field)}/${encodeURIComponent(key)}`,
+                ),
+                {
+                    headers: { Accept: "application/json" },
+                },
+            ),
+        );
+        return resp.json() as Promise<RecordEnvelope>;
+    }
+
+    async updateRecordRow(schema: string, field: string, key: string, payload: Uint8Array): Promise<RecordEnvelope> {
+        const resp = await ensureOk(
+            await fetch(
+                this.url(
+                    `/records/${encodeURIComponent(schema)}/row/${encodeURIComponent(field)}/${encodeURIComponent(key)}`,
+                ),
+                {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/x-scrt" },
+                    body: payload as BodyInit,
+                },
+            ),
+        );
+        return resp.json() as Promise<RecordEnvelope>;
+    }
+
+    async deleteRecordRow(schema: string, field: string, key: string): Promise<void> {
+        await ensureOk(
+            await fetch(
+                this.url(
+                    `/records/${encodeURIComponent(schema)}/row/${encodeURIComponent(field)}/${encodeURIComponent(key)}`,
+                ),
+                {
+                    method: "DELETE",
+                },
+            ),
+        );
     }
 
     async fetchBundle(schema: string): Promise<ScrtBundleEnvelope> {
