@@ -12,7 +12,8 @@ import (
 type fieldSetter func([]codec.Value, unsafe.Pointer)
 
 type fastStructEncoder struct {
-	setters []fieldSetter
+	setters    []fieldSetter
+	fieldCount int
 }
 
 var fastEncoderCache sync.Map
@@ -35,7 +36,8 @@ func buildFastStructEncoder(t reflect.Type, s *schema.Schema) *fastStructEncoder
 	setters := make([]fieldSetter, len(s.Fields))
 	for idx, binding := range bindings {
 		if len(binding.index) == 0 {
-			return nil
+			setters[idx] = nil
+			continue
 		}
 		field := t.FieldByIndex(binding.index)
 		setter, ok := makeFieldSetter(idx, field, s.Fields[idx])
@@ -44,72 +46,119 @@ func buildFastStructEncoder(t reflect.Type, s *schema.Schema) *fastStructEncoder
 		}
 		setters[idx] = setter
 	}
-	return &fastStructEncoder{setters: setters}
+	return &fastStructEncoder{setters: setters, fieldCount: len(s.Fields)}
 }
 
 func makeFieldSetter(idx int, field reflect.StructField, schemaField schema.Field) (fieldSetter, bool) {
 	offset := field.Offset
 	kind := schemaField.ValueKind()
 	switch kind {
-	case schema.KindUint64:
-		if field.Type.Kind() != reflect.Uint64 {
-			return nil, false
+	case schema.KindUint64, schema.KindRef:
+		switch field.Type.Kind() {
+		case reflect.Uint64:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Uint = *(*uint64)(ptr)
+				vals[idx].Str = ""
+				vals[idx].Set = true
+			}, true
+		case reflect.Uint:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Uint = uint64(*(*uint)(ptr))
+				vals[idx].Str = ""
+				vals[idx].Set = true
+			}, true
+		case reflect.Uint32:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Uint = uint64(*(*uint32)(ptr))
+				vals[idx].Str = ""
+				vals[idx].Set = true
+			}, true
+		case reflect.Uint16:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Uint = uint64(*(*uint16)(ptr))
+				vals[idx].Str = ""
+				vals[idx].Set = true
+			}, true
+		case reflect.Uint8:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Uint = uint64(*(*uint8)(ptr))
+				vals[idx].Str = ""
+				vals[idx].Set = true
+			}, true
 		}
-		return func(vals []codec.Value, base unsafe.Pointer) {
-			ptr := unsafe.Pointer(uintptr(base) + offset)
-			vals[idx].Uint = *(*uint64)(ptr)
-			vals[idx].Str = ""
-			vals[idx].Set = true
-		}, true
 	case schema.KindInt64:
-		if field.Type.Kind() != reflect.Int64 {
-			return nil, false
+		switch field.Type.Kind() {
+		case reflect.Int64:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Int = *(*int64)(ptr)
+				vals[idx].Set = true
+			}, true
+		case reflect.Int:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Int = int64(*(*int)(ptr))
+				vals[idx].Set = true
+			}, true
+		case reflect.Int32:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Int = int64(*(*int32)(ptr))
+				vals[idx].Set = true
+			}, true
+		case reflect.Int16:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Int = int64(*(*int16)(ptr))
+				vals[idx].Set = true
+			}, true
+		case reflect.Int8:
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Int = int64(*(*int8)(ptr))
+				vals[idx].Set = true
+			}, true
 		}
-		return func(vals []codec.Value, base unsafe.Pointer) {
-			ptr := unsafe.Pointer(uintptr(base) + offset)
-			vals[idx].Int = *(*int64)(ptr)
-			vals[idx].Set = true
-		}, true
 	case schema.KindFloat64:
-		if field.Type.Kind() != reflect.Float64 {
-			return nil, false
+		if field.Type.Kind() == reflect.Float64 {
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Float = *(*float64)(ptr)
+				vals[idx].Set = true
+			}, true
 		}
-		return func(vals []codec.Value, base unsafe.Pointer) {
-			ptr := unsafe.Pointer(uintptr(base) + offset)
-			vals[idx].Float = *(*float64)(ptr)
-			vals[idx].Set = true
-		}, true
 	case schema.KindBool:
-		if field.Type.Kind() != reflect.Bool {
-			return nil, false
+		if field.Type.Kind() == reflect.Bool {
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Bool = *(*bool)(ptr)
+				vals[idx].Set = true
+			}, true
 		}
-		return func(vals []codec.Value, base unsafe.Pointer) {
-			ptr := unsafe.Pointer(uintptr(base) + offset)
-			vals[idx].Bool = *(*bool)(ptr)
-			vals[idx].Set = true
-		}, true
 	case schema.KindString:
-		if field.Type.Kind() != reflect.String {
-			return nil, false
+		if field.Type.Kind() == reflect.String {
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Str = *(*string)(ptr)
+				vals[idx].Set = true
+			}, true
 		}
-		return func(vals []codec.Value, base unsafe.Pointer) {
-			ptr := unsafe.Pointer(uintptr(base) + offset)
-			vals[idx].Str = *(*string)(ptr)
-			vals[idx].Set = true
-		}, true
 	case schema.KindBytes:
-		if field.Type.Kind() != reflect.Slice || field.Type.Elem().Kind() != reflect.Uint8 {
-			return nil, false
+		if field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.Uint8 {
+			return func(vals []codec.Value, base unsafe.Pointer) {
+				ptr := unsafe.Pointer(uintptr(base) + offset)
+				vals[idx].Bytes = *(*[]byte)(ptr)
+				vals[idx].Borrowed = false
+				vals[idx].Set = true
+			}, true
 		}
-		return func(vals []codec.Value, base unsafe.Pointer) {
-			ptr := unsafe.Pointer(uintptr(base) + offset)
-			vals[idx].Bytes = *(*[]byte)(ptr)
-			vals[idx].Borrowed = false
-			vals[idx].Set = true
-		}, true
-	default:
-		return nil, false
 	}
+	return nil, false
 }
 
 func (f *fastStructEncoder) encode(row codec.Row, value reflect.Value) {
@@ -118,8 +167,8 @@ func (f *fastStructEncoder) encode(row codec.Row, value reflect.Value) {
 	}
 	vals := row.Values()
 	base := unsafe.Pointer(value.UnsafeAddr())
-	for _, setter := range f.setters {
-		if setter != nil {
+	for i := 0; i < f.fieldCount; i++ {
+		if setter := f.setters[i]; setter != nil {
 			setter(vals, base)
 		}
 	}

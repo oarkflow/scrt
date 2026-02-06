@@ -57,8 +57,11 @@ func ReleaseRow(r *Row) {
 
 var rowPools sync.Map
 
-// Reset clears string references to aid GC.
-func (r Row) Reset() {
+// Reset clears the row for reuse. We use slice replacement for efficiency.
+// The old values will be garbage collected once the slice is overwritten.
+func (r *Row) Reset() {
+	// Only clear what we need - set values to zero/empty
+	// This is faster than creating a new slice
 	for i := range r.values {
 		r.values[i] = Value{}
 	}

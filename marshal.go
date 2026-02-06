@@ -109,12 +109,119 @@ func MarshalFiles(schemaPath, schemaName, dataPath string, input any, opts ...Ma
 
 func encodeInto(dst *bytes.Buffer, s *schema.Schema, input any, cfg MarshalOptions) error {
 	writer := codec.NewWriter(dst, s, cfg.RowsPerPage)
-	row := codec.AcquireRow(s)
-	defer codec.ReleaseRow(row)
+	defer writer.Close()
+
+	var bindings []structField
+	var lastType reflect.Type
+	var row *codec.Row
+
 	err := visitRecords(input, func(v reflect.Value) error {
 		v = indirect(v)
 		if !v.IsValid() {
 			return fmt.Errorf("scrt: nil record")
+		}
+
+		if v.Kind() == reflect.Struct {
+			if err := writer.StartRow(); err != nil {
+				return err
+			}
+
+			t := v.Type()
+			if t != lastType {
+				bindings = structBindingsForSchema(t, s)
+				lastType = t
+			}
+
+			for idx, binding := range bindings {
+				if len(binding.index) == 0 {
+					writer.RecordPresence(idx, false)
+					continue
+				}
+
+				fv := v.FieldByIndex(binding.index)
+				// Handle pointer fields
+				if fv.Kind() == reflect.Ptr {
+					if fv.IsNil() {
+						writer.RecordPresence(idx, false)
+						continue
+					}
+					fv = fv.Elem()
+				}
+
+				if !fv.IsValid() {
+					writer.RecordPresence(idx, false)
+					continue
+				}
+
+				writer.RecordPresence(idx, true)
+
+				// Fast path for matching types
+				switch s.Fields[idx].Kind {
+				case schema.KindUint64, schema.KindRef:
+					if u, err := valueAsUint(fv); err == nil {
+						writer.AppendUint(idx, u)
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindInt64:
+					if i, err := valueAsInt(fv); err == nil {
+						writer.AppendInt(idx, i)
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindFloat64:
+					if f, err := valueAsFloat(fv); err == nil {
+						writer.AppendFloat(idx, f)
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindString:
+					if str, err := valueAsString(fv); err == nil {
+						writer.AppendString(idx, str)
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindBool:
+					if b, err := valueAsBool(fv); err == nil {
+						writer.AppendBool(idx, b)
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindBytes:
+					if b, err := valueAsBytes(fv); err == nil {
+						writer.AppendBytes(idx, b)
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindDate, schema.KindDateTime, schema.KindTimestamp:
+					if t, err := valueAsTime(fv, s.Fields[idx].Kind); err == nil {
+						writer.AppendInt(idx, encodeTemporalInt(s.Fields[idx].Kind, t))
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindTimestampTZ:
+					if t, err := valueAsTime(fv, s.Fields[idx].Kind); err == nil {
+						writer.AppendString(idx, temporal.FormatTimestampTZ(t))
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				case schema.KindDuration:
+					if d, err := valueAsDuration(fv); err == nil {
+						writer.AppendInt(idx, int64(d))
+					} else {
+						return fmt.Errorf("scrt: field %s: %w", s.Fields[idx].Name, err)
+					}
+				default:
+					return fmt.Errorf("scrt: unsupported field kind %d", s.Fields[idx].Kind)
+				}
+			}
+			return writer.EndRow()
+		}
+
+		// Fallback for maps and other types
+		if row == nil {
+			row = codec.AcquireRow(s)
+			defer codec.ReleaseRow(row)
 		}
 		row.Reset()
 		if err := populateRow(*row, v, s); err != nil {
@@ -122,11 +229,12 @@ func encodeInto(dst *bytes.Buffer, s *schema.Schema, input any, cfg MarshalOptio
 		}
 		return writer.WriteRow(*row)
 	})
-	if err != nil {
-		return err
-	}
-	return writer.Close()
+
+	return err
 }
+
+// encodeIntoDirect has been merged into encodeInto
+
 
 func visitRecords(input any, fn func(reflect.Value) error) error {
 	if input == nil {

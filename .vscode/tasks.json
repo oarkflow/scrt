@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "append_helper",
+			"type": "shell",
+			"command": "/bin/sh",
+			"args": [
+				"-c",
+				"cat <<EOF >> /Users/sujit/Sites/scrt/codec/writer.go\n\n// getFieldValue extracts a field value by name from a reflect.Value.\n// This is a simplified version - in practice, this would handle struct tags, etc.\nfunc getFieldValue(value reflect.Value, fieldName string) reflect.Value {\n\tif value.Kind() == reflect.Struct {\n\t\tfield := value.FieldByName(fieldName)\n\t\tif field.IsValid() {\n\t\t\treturn field\n\t\t}\n\t} else if value.Kind() == reflect.Map && value.Type().Key().Kind() == reflect.String {\n\t\treturn value.MapIndex(reflect.ValueOf(fieldName))\n\t}\n\treturn reflect.Value{}\n}\nEOF"
+			],
+			"group": "build"
+		}
+	]
+}

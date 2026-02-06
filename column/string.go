@@ -60,6 +60,7 @@ func (c *StringColumn) Encode(dst *bytes.Buffer) {
 }
 
 func (c *StringColumn) Reset() {
+	// Clear dictionary by deleting keys - this doesn't allocate
 	for k := range c.dict {
 		delete(c.dict, k)
 	}
