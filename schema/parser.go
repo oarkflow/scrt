@@ -139,6 +139,18 @@ func Parse(r io.Reader) (*Document, error) {
 			}
 			current.Fields = append(current.Fields, field)
 
+		case strings.HasPrefix(line, "@index"):
+			fieldBlock = false
+			currentDataSchema = ""
+			if current == nil {
+				return nil, errors.New("@index outside of schema")
+			}
+			idx, err := parseIndex(strings.TrimSpace(strings.TrimPrefix(line, "@index")))
+			if err != nil {
+				return nil, err
+			}
+			current.Indexes = append(current.Indexes, idx)
+
 		case strings.HasPrefix(strings.ToLower(line), "fields"):
 			if current == nil {
 				return nil, errors.New("fields block outside of schema")
@@ -291,6 +303,10 @@ func parseField(body string) (Field, error) {
 			switch {
 			case lower == "auto_increment" || lower == "autoincrement" || lower == "serial":
 				field.AutoIncrement = true
+			case lower == "primary_key" || lower == "pk" || lower == "primary":
+				field.PrimaryKey = true
+			case lower == "unique":
+				field.Unique = true
 			case lower == "nullable" || lower == "null":
 				field.Nullable = true
 			case strings.HasPrefix(lower, "default="):
@@ -311,6 +327,52 @@ func parseField(body string) (Field, error) {
 	}
 
 	return field, nil
+}
+
+func parseIndex(body string) (Index, error) {
+	// @index:Name(f1, f2) unique
+	// or @index Name(f1, f2) unique
+	body = strings.TrimSpace(body)
+	if strings.HasPrefix(body, ":") {
+		body = strings.TrimSpace(body[1:]) // Remove leading colon if present
+	}
+
+	// Find the argument list parens
+	openParen := strings.Index(body, "(")
+	closeParen := strings.LastIndex(body, ")")
+
+	if openParen == -1 || closeParen == -1 || closeParen < openParen {
+		return Index{}, fmt.Errorf("invalid index definition, missing parentheses: %q", body)
+	}
+
+	name := strings.TrimSpace(body[:openParen])
+	fieldsStr := body[openParen+1 : closeParen]
+	rest := strings.TrimSpace(body[closeParen+1:])
+
+	rawFields := strings.Split(fieldsStr, ",")
+	var fields []string
+	for _, f := range rawFields {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			fields = append(fields, f)
+		}
+	}
+
+	idx := Index{
+		Name:   name,
+		Fields: fields,
+	}
+
+	if rest != "" {
+		attrs := strings.Fields(rest)
+		for _, attr := range attrs {
+			if strings.ToLower(attr) == "unique" {
+				idx.Unique = true
+			}
+		}
+	}
+
+	return idx, nil
 }
 
 func splitFieldParts(body string) (string, string, string, error) {

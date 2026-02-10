@@ -33,6 +33,8 @@ type Field struct {
 	TargetSchema  string
 	TargetField   string
 	AutoIncrement bool
+	PrimaryKey    bool
+	Unique        bool
 	Nullable      bool
 	RawType       string
 	Attributes    []string
@@ -42,10 +44,18 @@ type Field struct {
 	pendingDefault string
 }
 
+// Index represents a database index definition.
+type Index struct {
+	Name   string
+	Fields []string
+	Unique bool
+}
+
 // Schema represents a canonical schema definition extracted from the DSL.
 type Schema struct {
 	Name   string
 	Fields []Field
+	Indexes []Index
 
 	once        sync.Once
 	fingerprint uint64

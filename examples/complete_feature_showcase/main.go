@@ -144,6 +144,10 @@ func (vm *SimpleInterpreter) ExecuteFunction(name string, args ...interface{}) i
 				}
 
 				if targetSchema != "" {
+					if err := vm.checkConstraints(targetSchema, mapObj); err != nil {
+						fmt.Printf("[INTERP] Constraint violation: %v\n", err)
+						return nil // Abort function
+					}
 					vm.doc.Data[targetSchema] = append(vm.doc.Data[targetSchema], mapObj)
 					fmt.Printf("[INTERP] Inserted record into %s: %v\n", targetSchema, mapObj)
 				}
@@ -197,6 +201,68 @@ func (vm *SimpleInterpreter) ExecuteFunction(name string, args ...interface{}) i
 			continue
 		}
 	}
+	return nil
+}
+
+// checkConstraints verifies PK, Unique, and Index constraints
+func (vm *SimpleInterpreter) checkConstraints(schemaName string, record map[string]interface{}) error {
+	schemaObj, ok := vm.doc.Schemas[schemaName]
+	if !ok {
+		return nil
+	}
+	existingRows := vm.doc.Data[schemaName]
+
+	// 1. Check Field Constraints (PK, Unique)
+	for _, field := range schemaObj.Fields {
+		if !field.PrimaryKey && !field.Unique {
+			continue
+		}
+
+		newVal, hasVal := record[field.Name]
+		if !hasVal || newVal == nil {
+			if field.PrimaryKey {
+				return fmt.Errorf("primary key %s cannot be null", field.Name)
+			}
+			continue // Unique constraint usually allows multiple nulls unless specified otherwise, but strict SQL unique often allows ONE null or multiple depending on DB. We'll allow nulls.
+		}
+
+		for _, row := range existingRows {
+			existingVal, ok := row[field.Name]
+			if !ok || existingVal == nil {
+				continue
+			}
+			if fmt.Sprintf("%v", existingVal) == fmt.Sprintf("%v", newVal) {
+				return fmt.Errorf("duplicate value '%v' for unique/pk field '%s'", newVal, field.Name)
+			}
+		}
+	}
+
+	// 2. Check Index Constraints (Unique Indexes only for now)
+	for _, idx := range schemaObj.Indexes {
+		if !idx.Unique {
+			continue
+		}
+
+		// Composite unique check
+		for _, row := range existingRows {
+			match := true
+			for _, fieldName := range idx.Fields {
+				newVal := record[fieldName]
+				existingVal := row[fieldName]
+
+				// Handle nil/missing comparison
+				// If any part of the composite key is different, the row is different.
+				if fmt.Sprintf("%v", existingVal) != fmt.Sprintf("%v", newVal) {
+					match = false
+					break
+				}
+			}
+			if match {
+				return fmt.Errorf("duplicate entry for unique index '%s'", idx.Name)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -421,6 +487,10 @@ func main() {
 	fmt.Println("\n--- 1. Creating User ( Interpreted ) ---")
 	user := vm.ExecuteFunction("CreateUser", "dave_interpreted", "dave@example.com")
 	fmt.Printf("Result: %v\n", user)
+
+	// Test Constraint Violation
+	fmt.Println("\n--- 1b. Creating Duplicate User ( Should Fail ) ---")
+	vm.ExecuteFunction("CreateUser", "dave_interpreted", "dave@example.com")
 
 	fmt.Println("\n--- 2. Updating Stock ( Interpreted ) ---")
 	// "UPDATE Product SET StockLevel = pQty WHERE SKU = pSku"

@@ -37,6 +37,12 @@ func (d *Document) Write(w io.Writer) error {
 			if f.AutoIncrement {
 				fmt.Fprintf(w, " serial") // or auto_increment
 			}
+			if f.PrimaryKey {
+				fmt.Fprintf(w, " pk")
+			}
+			if f.Unique {
+				fmt.Fprintf(w, " unique")
+			}
 			if f.TargetSchema != "" {
 				// RawType usually contains the Ref, so we might duplicate if we aren't careful.
 				// But Parser places "ref:X:Y" in RawType.
@@ -68,6 +74,15 @@ func (d *Document) Write(w io.Writer) error {
 				}
 			}
 			// Other attributes?
+			fmt.Fprintln(w)
+		}
+
+		// Write Indexes
+		for _, idx := range s.Indexes {
+			fmt.Fprintf(w, "@index:%s(%s)", idx.Name, strings.Join(idx.Fields, ", "))
+			if idx.Unique {
+				fmt.Fprint(w, " unique")
+			}
 			fmt.Fprintln(w)
 		}
 		fmt.Fprintln(w)
