@@ -14,25 +14,45 @@ import (
 func Parse(r io.Reader) (*Document, error) {
 	scanner := bufio.NewScanner(r)
 	doc := &Document{
-		Schemas: make(map[string]*Schema),
-		Data:    make(map[string][]map[string]interface{}),
+		Schemas:   make(map[string]*Schema),
+		Data:      make(map[string][]map[string]interface{}),
+		Functions: make(map[string]*Function),
+		Queries:   make(map[string]*Query),
 	}
 
 	var current *Schema
+	var currentFunc *Function
+	var currentQuery *Query
 	var awaitingName bool
 	var currentDataSchema string
 	var fieldBlock bool
 
+	// Step 1: Collect schema/function definitions and raw data lines
+	pendingData := make(map[string][]string)
+
 	finishCurrent := func() error {
-		if current == nil {
-			return nil
+		if current != nil {
+			if _, exists := doc.Schemas[current.Name]; exists {
+				return fmt.Errorf("duplicate schema %q", current.Name)
+			}
+			doc.Schemas[current.Name] = current
+			current = nil
+			fieldBlock = false
 		}
-		if _, exists := doc.Schemas[current.Name]; exists {
-			return fmt.Errorf("duplicate schema %q", current.Name)
+		if currentFunc != nil {
+			if _, exists := doc.Functions[currentFunc.Name]; exists {
+				return fmt.Errorf("duplicate function %q", currentFunc.Name)
+			}
+			doc.Functions[currentFunc.Name] = currentFunc
+			currentFunc = nil
 		}
-		doc.Schemas[current.Name] = current
-		current = nil
-		fieldBlock = false
+		if currentQuery != nil {
+			if _, exists := doc.Queries[currentQuery.Name]; exists {
+				return fmt.Errorf("duplicate query %q", currentQuery.Name)
+			}
+			doc.Queries[currentQuery.Name] = currentQuery
+			currentQuery = nil
+		}
 		return nil
 	}
 
@@ -55,23 +75,7 @@ func Parse(r io.Reader) (*Document, error) {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if fieldBlock && current != nil && currentDataSchema == "" && !strings.HasPrefix(line, "@") {
-			field, err := parseField(line)
-			if err != nil {
-				return nil, err
-			}
-			current.Fields = append(current.Fields, field)
-			continue
-		}
-
-		if awaitingName {
-			if err := startSchema(line); err != nil {
-				return nil, err
-			}
-			awaitingName = false
-			fieldBlock = false
-			continue
-		}
+		// logic moved to switch
 
 		switch {
 		case strings.HasPrefix(line, "@schema"):
@@ -88,6 +92,40 @@ func Parse(r io.Reader) (*Document, error) {
 			if err := startSchema(rest); err != nil {
 				return nil, err
 			}
+
+		case strings.HasPrefix(line, "@function"):
+			fieldBlock = false
+			currentDataSchema = ""
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "@function"))
+			if strings.HasPrefix(rest, ":") {
+				rest = strings.TrimSpace(rest[1:])
+			}
+			f, err := parseFunctionHeader(rest)
+			if err != nil {
+				return nil, err
+			}
+			if err := finishCurrent(); err != nil {
+				return nil, err
+			}
+			currentFunc = f
+			continue
+
+		case strings.HasPrefix(line, "@query"):
+			fieldBlock = false
+			currentDataSchema = ""
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "@query"))
+			if strings.HasPrefix(rest, ":") {
+				rest = strings.TrimSpace(rest[1:])
+			}
+			q, err := parseQueryHeader(rest)
+			if err != nil {
+				return nil, err
+			}
+			if err := finishCurrent(); err != nil {
+				return nil, err
+			}
+			currentQuery = q
+			continue
 
 		case strings.HasPrefix(line, "@field"):
 			fieldBlock = false
@@ -107,6 +145,7 @@ func Parse(r io.Reader) (*Document, error) {
 			}
 			fieldBlock = true
 			continue
+
 		case strings.HasPrefix(line, "@"):
 			fieldBlock = false
 			awaitingName = false
@@ -114,17 +153,9 @@ func Parse(r io.Reader) (*Document, error) {
 				return nil, err
 			}
 
-			// Check if it's a data row (contains =) or section marker
+			// Check if it's a data row (contains =)
 			if strings.Contains(line, "=") && currentDataSchema != "" {
-				// This is a data row like @MsgID=1002, not a section marker
-				sch, exists := doc.Schemas[currentDataSchema]
-				if exists {
-					row, err := parseDataRow(line, sch)
-					if err != nil {
-						return nil, fmt.Errorf("parsing data row for %s: %w", currentDataSchema, err)
-					}
-					doc.Data[currentDataSchema] = append(doc.Data[currentDataSchema], row)
-				}
+				pendingData[currentDataSchema] = append(pendingData[currentDataSchema], line)
 				continue
 			}
 
@@ -134,18 +165,32 @@ func Parse(r io.Reader) (*Document, error) {
 			continue
 
 		default:
+			if currentFunc != nil {
+				if currentFunc.Body != "" {
+					currentFunc.Body += "\n"
+				}
+				currentFunc.Body += line
+				continue
+			}
+			if currentQuery != nil {
+				if currentQuery.SQL != "" {
+					currentQuery.SQL += "\n"
+				}
+				currentQuery.SQL += line
+				continue
+			}
 			// If we're in a data section, parse the row
 			if currentDataSchema != "" {
-				sch, exists := doc.Schemas[currentDataSchema]
-				if !exists {
-					// Schema not yet defined, skip
-					continue
+				pendingData[currentDataSchema] = append(pendingData[currentDataSchema], line)
+			} else {
+				// field block implicit?
+				if fieldBlock && current != nil {
+					field, err := parseField(line)
+					if err != nil {
+						return nil, err
+					}
+					current.Fields = append(current.Fields, field)
 				}
-				row, err := parseDataRow(line, sch)
-				if err != nil {
-					return nil, fmt.Errorf("parsing data row for %s: %w", currentDataSchema, err)
-				}
-				doc.Data[currentDataSchema] = append(doc.Data[currentDataSchema], row)
 			}
 			continue
 		}
@@ -163,6 +208,23 @@ func Parse(r io.Reader) (*Document, error) {
 	if err := doc.finalize(); err != nil {
 		return nil, err
 	}
+
+	// Step 2: Parse data rows after all schemas are loaded and resolved
+	for schemaName, lines := range pendingData {
+		sch, ok := doc.Schemas[schemaName]
+		if !ok {
+			// Warn or invalid data section? For now, skip if schema triggers later
+			continue
+		}
+		for _, line := range lines {
+			row, err := parseDataRow(line, sch)
+			if err != nil {
+				return nil, fmt.Errorf("parsing data row for %s: %w", schemaName, err)
+			}
+			doc.Data[schemaName] = append(doc.Data[schemaName], row)
+		}
+	}
+
 	return doc, nil
 }
 
@@ -176,6 +238,12 @@ func parseField(body string) (Field, error) {
 		return Field{}, err
 	}
 	field := Field{Name: name, RawType: typ}
+
+	if strings.HasPrefix(typ, "?") {
+		field.Nullable = true
+		typ = typ[1:]
+	}
+
 	lower := strings.ToLower(typ)
 	switch {
 	case lower == "uint64" || lower == "uint":
@@ -223,6 +291,8 @@ func parseField(body string) (Field, error) {
 			switch {
 			case lower == "auto_increment" || lower == "autoincrement" || lower == "serial":
 				field.AutoIncrement = true
+			case lower == "nullable" || lower == "null":
+				field.Nullable = true
 			case strings.HasPrefix(lower, "default="):
 				val := strings.TrimSpace(attr[len("default="):])
 				if err := assignFieldDefault(&field, val); err != nil {
@@ -465,6 +535,14 @@ func parseCSVLine(line string) []string {
 
 func parseValue(raw string, field *Field) (interface{}, error) {
 	raw = strings.TrimSpace(raw)
+
+	if strings.EqualFold(raw, "null") {
+		if field != nil && !field.Nullable {
+			return nil, fmt.Errorf("field %s is not nullable", field.Name)
+		}
+		return nil, nil
+	}
+
 	if field == nil {
 		return raw, nil
 	}
@@ -560,4 +638,69 @@ func parseValue(raw string, field *Field) (interface{}, error) {
 	default:
 		return raw, nil
 	}
+}
+
+func parseFunctionHeader(line string) (*Function, error) {
+	parenOpen := strings.Index(line, "(")
+	parenClose := strings.LastIndex(line, ")")
+	if parenOpen == -1 || parenClose == -1 || parenClose < parenOpen {
+		return nil, errors.New("invalid function signature")
+	}
+	name := strings.TrimSpace(line[:parenOpen])
+	argsStr := line[parenOpen+1 : parenClose]
+	ret := strings.TrimSpace(line[parenClose+1:])
+
+	args, err := parseArgs(argsStr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Function{
+		Name:       name,
+		Args:       args,
+		ReturnType: ret,
+	}, nil
+}
+
+func parseQueryHeader(line string) (*Query, error) {
+	parenOpen := strings.Index(line, "(")
+	if parenOpen == -1 {
+		return &Query{Name: strings.TrimSpace(line)}, nil
+	}
+	parenClose := strings.LastIndex(line, ")")
+	if parenClose == -1 || parenClose < parenOpen {
+		return nil, errors.New("invalid query signature")
+	}
+	name := strings.TrimSpace(line[:parenOpen])
+	argsStr := line[parenOpen+1 : parenClose]
+
+	args, err := parseArgs(argsStr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Query{
+		Name: name,
+		Args: args,
+	}, nil
+}
+
+func parseArgs(s string) ([]Argument, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	var args []Argument
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		idx := strings.LastIndex(p, " ")
+		if idx == -1 {
+			return nil, fmt.Errorf("invalid argument format: %q", p)
+		}
+		name := strings.TrimSpace(p[:idx])
+		typ := strings.TrimSpace(p[idx+1:])
+		args = append(args, Argument{Name: name, Type: typ})
+	}
+	return args, nil
 }

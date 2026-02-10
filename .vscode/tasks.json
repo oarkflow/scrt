@@ -10,6 +10,46 @@
 				"cat <<EOF >> /Users/sujit/Sites/scrt/codec/writer.go\n\n// getFieldValue extracts a field value by name from a reflect.Value.\n// This is a simplified version - in practice, this would handle struct tags, etc.\nfunc getFieldValue(value reflect.Value, fieldName string) reflect.Value {\n\tif value.Kind() == reflect.Struct {\n\t\tfield := value.FieldByName(fieldName)\n\t\tif field.IsValid() {\n\t\t\treturn field\n\t\t}\n\t} else if value.Kind() == reflect.Map && value.Type().Key().Kind() == reflect.String {\n\t\treturn value.MapIndex(reflect.ValueOf(fieldName))\n\t}\n\treturn reflect.Value{}\n}\nEOF"
 			],
 			"group": "build"
+		},
+		{
+			"label": "append_types",
+			"type": "shell",
+			"command": "/bin/sh",
+			"args": [
+				"-c",
+				"cat <<EOF >> /Users/sujit/Sites/scrt/schema/types.go\n\n// Argument represents a function or query argument.\ntype Argument struct {\n\tName string\n\tType string\n}\n\n// Function represents a server-side function definition.\ntype Function struct {\n\tName       string\n\tArgs       []Argument\n\tReturnType string\n\tBody       string\n}\n\n// Query represents a stored SQL query.\ntype Query struct {\n\tName string\n\tArgs []Argument\n\tSQL  string\n}\nEOF"
+			],
+			"group": "build"
+		},
+		{
+			"label": "append_parser_helpers",
+			"type": "shell",
+			"command": "/bin/sh",
+			"args": [
+				"-c",
+				"cat <<EOF >> /Users/sujit/Sites/scrt/schema/parser.go\n\nfunc parseFunctionHeader(line string) (*Function, error) {\n\tparenOpen := strings.Index(line, \"(\")\n\tparenClose := strings.LastIndex(line, \")\")\n\tif parenOpen == -1 || parenClose == -1 || parenClose < parenOpen {\n\t\treturn nil, errors.New(\"invalid function signature\")\n\t}\n\tname := strings.TrimSpace(line[:parenOpen])\n\targsStr := line[parenOpen+1 : parenClose]\n\tret := strings.TrimSpace(line[parenClose+1:])\n\n\targs, err := parseArgs(argsStr)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &Function{\n\t\tName:       name,\n\t\tArgs:       args,\n\t\tReturnType: ret,\n\t}, nil\n}\n\nfunc parseQueryHeader(line string) (*Query, error) {\n\tparenOpen := strings.Index(line, \"(\")\n\tif parenOpen == -1 {\n\t\treturn &Query{Name: strings.TrimSpace(line)}, nil\n\t}\n\tparenClose := strings.LastIndex(line, \")\")\n\tif parenClose == -1 || parenClose < parenOpen {\n\t\treturn nil, errors.New(\"invalid query signature\")\n\t}\n\tname := strings.TrimSpace(line[:parenOpen])\n\targsStr := line[parenOpen+1 : parenClose]\n\n\targs, err := parseArgs(argsStr)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &Query{\n\t\tName: name,\n\t\tArgs: args,\n\t}, nil\n}\n\nfunc parseArgs(s string) ([]Argument, error) {\n\ts = strings.TrimSpace(s)\n\tif s == \"\" {\n\t\treturn nil, nil\n\t}\n\tparts := strings.Split(s, \",\")\n\tvar args []Argument\n\tfor _, p := range parts {\n\t\tp = strings.TrimSpace(p)\n\t\tidx := strings.LastIndex(p, \" \")\n\t\tif idx == -1 {\n\t\t\treturn nil, fmt.Errorf(\"invalid argument format: %q\", p)\n\t\t}\n\t\tname := strings.TrimSpace(p[:idx])\n\t\ttyp := strings.TrimSpace(p[idx+1:])\n\t\targs = append(args, Argument{Name: name, Type: typ})\n\t}\n\treturn args, nil\n}\nEOF"
+			],
+			"group": "build"
+		},
+		{
+			"label": "append_ts_parser_helpers",
+			"type": "shell",
+			"command": "/bin/sh",
+			"args": [
+				"-c",
+				"cat <<EOF >> /Users/sujit/Sites/scrt/src/schema.ts\n\nfunction parseFunctionHeader(line: string): FunctionDef {\n    const parenOpen = line.indexOf(\"(\");\n    const parenClose = line.lastIndexOf(\")\");\n    if (parenOpen === -1 || parenClose === -1 || parenClose < parenOpen) {\n        throw new Error(\"scrt: invalid function signature\");\n    }\n    const name = line.slice(0, parenOpen).trim();\n    const argsStr = line.slice(parenOpen + 1, parenClose);\n    const ret = line.slice(parenClose + 1).trim();\n    const args = parseArgs(argsStr);\n    return new FunctionDef(name, args, ret);\n}\n\nfunction parseQueryHeader(line: string): QueryDef {\n    const parenOpen = line.indexOf(\"(\");\n    if (parenOpen === -1) {\n        return new QueryDef(line.trim(), []);\n    }\n    const parenClose = line.lastIndexOf(\")\");\n    if (parenClose === -1 || parenClose < parenOpen) {\n        throw new Error(\"scrt: invalid query signature\");\n    }\n    const name = line.slice(0, parenOpen).trim();\n    const argsStr = line.slice(parenOpen + 1, parenClose);\n    const args = parseArgs(argsStr);\n    return new QueryDef(name, args);\n}\n\nfunction parseArgs(str: string): Argument[] {\n    const s = str.trim();\n    if (!s) return [];\n    const parts = s.split(\",\");\n    const args: Argument[] = [];\n    for (const p of parts) {\n        const trimmed = p.trim();\n        const idx = trimmed.lastIndexOf(\" \");\n        if (idx === -1) {\n            throw new Error(\\`scrt: invalid argument format: \\${p}\\`);\n        }\n        const name = trimmed.slice(0, idx).trim();\n        const typ = trimmed.slice(idx + 1).trim();\n        args.push({ name, type: typ });\n    }\n    return args;\n}\nEOF"
+			],
+			"group": "build"
+		},
+		{
+			"label": "append_crud_ops",
+			"type": "shell",
+			"command": "/bin/sh",
+			"args": [
+				"-c",
+				"cat <<EOF >> /Users/sujit/Sites/scrt/examples/complete_feature_showcase/full_features.scrt\n\n# ----------------------------------------------------------------------------\n# 5. CRUD Operations (Signatures)\n# ----------------------------------------------------------------------------\n\n@function:CreateUser(username string, email string) User\n    // Logic to insert a new user\n\n@function:UpdateProductStock(sku string, quantity int) bool\n    // Logic to update stock level\n\n@function:DeleteOrder(orderID int) bool\n    // Logic to remove an order\nEOF"
+			],
+			"group": "build"
 		}
 	]
 }

@@ -4,6 +4,8 @@ package schema
 type Document struct {
 	Schemas map[string]*Schema
 	Data    map[string][]map[string]interface{} // schema name -> rows
+	Functions map[string]*Function
+	Queries   map[string]*Query
 	Source  string
 }
 

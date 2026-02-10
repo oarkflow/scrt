@@ -49,11 +49,30 @@ export declare class Schema {
     fieldIndexByName(name: string): number;
     tryFieldIndex(name: string): number | undefined;
 }
+export interface Argument {
+    name: string;
+    type: string;
+}
+export declare class FunctionDef {
+    name: string;
+    args: Argument[];
+    returnType: string;
+    body: string;
+    constructor(name: string, args: Argument[], returnType: string, body?: string);
+}
+export declare class QueryDef {
+    name: string;
+    args: Argument[];
+    sql: string;
+    constructor(name: string, args: Argument[], sql?: string);
+}
 export declare class Document {
     readonly schemas: Map<string, Schema>;
     readonly data: Map<string, Record<string, unknown>[]>;
+    readonly functions: Map<string, FunctionDef>;
+    readonly queries: Map<string, QueryDef>;
     source?: string | undefined;
-    constructor(schemas: Map<string, Schema>, data: Map<string, Record<string, unknown>[]>, source?: string | undefined);
+    constructor(schemas: Map<string, Schema>, data: Map<string, Record<string, unknown>[]>, functions: Map<string, FunctionDef>, queries: Map<string, QueryDef>, source?: string | undefined);
     schema(name: string): Schema | undefined;
     records(name: string): Record<string, unknown>[] | undefined;
     finalize(): void;

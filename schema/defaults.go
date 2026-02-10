@@ -12,18 +12,22 @@ import (
 
 // DefaultValue keeps the typed literal configured for a field.
 type DefaultValue struct {
-	Kind   FieldKind
-	Bool   bool
-	Int    int64
-	Uint   uint64
-	Float  float64
-	String string
-	Bytes  []byte
+	Kind       FieldKind
+	Bool       bool
+	Int        int64
+	Uint       uint64
+	Float      float64
+	String     string
+	Bytes      []byte
+	Expression string
 }
 
 func (d *DefaultValue) hashKey() string {
 	if d == nil {
 		return ""
+	}
+	if d.Expression != "" {
+		return "expr:" + d.Expression
 	}
 	switch d.Kind {
 	case KindBool:
@@ -102,51 +106,61 @@ func parseDefaultLiteral(kind FieldKind, raw string) (*DefaultValue, error) {
 	case KindDate:
 		unquoted, err := parseStringLiteral(raw)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		t, err := temporal.ParseDate(unquoted)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		val.Int = temporal.EncodeDate(t)
 	case KindDateTime:
 		unquoted, err := parseStringLiteral(raw)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		t, err := temporal.ParseDateTime(unquoted)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		val.Int = temporal.EncodeInstant(t)
 	case KindTimestamp:
 		unquoted, err := parseStringLiteral(raw)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		t, err := temporal.ParseTimestamp(unquoted)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		val.Int = temporal.EncodeInstant(t)
 	case KindTimestampTZ:
 		unquoted, err := parseStringLiteral(raw)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		t, err := temporal.ParseTimestampTZ(unquoted)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		val.String = temporal.FormatTimestampTZ(t)
 	case KindDuration:
 		unquoted, err := parseStringLiteral(raw)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		dur, err := temporal.ParseDuration(unquoted)
 		if err != nil {
-			return nil, err
+			val.Expression = raw
+			return val, nil
 		}
 		val.Int = int64(dur)
 	default:

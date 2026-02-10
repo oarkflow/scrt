@@ -33,6 +33,7 @@ type Field struct {
 	TargetSchema  string
 	TargetField   string
 	AutoIncrement bool
+	Nullable      bool
 	RawType       string
 	Attributes    []string
 	Default       *DefaultValue
@@ -146,4 +147,25 @@ func (f Field) HasAttribute(label string) bool {
 		}
 	}
 	return false
+}
+
+// Argument represents a function or query argument.
+type Argument struct {
+	Name string
+	Type string
+}
+
+// Function represents a server-side function definition.
+type Function struct {
+	Name       string
+	Args       []Argument
+	ReturnType string
+	Body       string
+}
+
+// Query represents a stored SQL query.
+type Query struct {
+	Name string
+	Args []Argument
+	SQL  string
 }

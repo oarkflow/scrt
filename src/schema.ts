@@ -151,10 +151,34 @@ export class Schema {
     }
 }
 
+export interface Argument {
+    name: string;
+    type: string;
+}
+
+export class FunctionDef {
+    constructor(
+        public name: string,
+        public args: Argument[],
+        public returnType: string,
+        public body: string = ""
+    ) { }
+}
+
+export class QueryDef {
+    constructor(
+        public name: string,
+        public args: Argument[],
+        public sql: string = ""
+    ) { }
+}
+
 export class Document {
     constructor(
         public readonly schemas: Map<string, Schema>,
         public readonly data: Map<string, Record<string, unknown>[]>,
+        public readonly functions: Map<string, FunctionDef>,
+        public readonly queries: Map<string, QueryDef>,
         public source?: string,
     ) { }
 
@@ -177,21 +201,38 @@ export function parseSchema(text: string): Document {
     const lines = text.split(/\r?\n/).map((line) => line.trim());
     const schemas = new Map<string, Schema>();
     const data = new Map<string, Record<string, unknown>[]>();
+    const functions = new Map<string, FunctionDef>();
+    const queries = new Map<string, QueryDef>();
 
     let current: Schema | undefined;
+    let currentFunc: FunctionDef | undefined;
+    let currentQuery: QueryDef | undefined;
     let awaitingName = false;
     let currentData = "";
     let fieldBlock = false;
 
     const finishCurrent = (): void => {
-        if (!current) {
-            return;
+        if (current) {
+            if (schemas.has(current.name)) {
+                throw new Error(`scrt: duplicate schema ${current.name}`);
+            }
+            schemas.set(current.name, current);
+            current = undefined;
         }
-        if (schemas.has(current.name)) {
-            throw new Error(`scrt: duplicate schema ${current.name}`);
+        if (currentFunc) {
+            if (functions.has(currentFunc.name)) {
+                throw new Error(`scrt: duplicate function ${currentFunc.name}`);
+            }
+            functions.set(currentFunc.name, currentFunc);
+            currentFunc = undefined;
         }
-        schemas.set(current.name, current);
-        current = undefined;
+        if (currentQuery) {
+            if (queries.has(currentQuery.name)) {
+                throw new Error(`scrt: duplicate query ${currentQuery.name}`);
+            }
+            queries.set(currentQuery.name, currentQuery);
+            currentQuery = undefined;
+        }
     };
 
     const startSchema = (name: string): void => {
@@ -210,6 +251,18 @@ export function parseSchema(text: string): Document {
         if (line.startsWith("#")) {
             continue;
         }
+
+        if (currentFunc && !line.startsWith("@")) {
+            if (currentFunc.body) currentFunc.body += "\n";
+            currentFunc.body += line;
+            continue;
+        }
+        if (currentQuery && !line.startsWith("@")) {
+            if (currentQuery.sql) currentQuery.sql += "\n";
+            currentQuery.sql += line;
+            continue;
+        }
+
         if (fieldBlock && current && !currentData && !line.startsWith("@")) {
             const field = parseField(line);
             current.fields.push(field);
@@ -235,6 +288,30 @@ export function parseSchema(text: string): Document {
             startSchema(rest);
             continue;
         }
+
+        if (line.startsWith("@function")) {
+            finishCurrent();
+            fieldBlock = false;
+            currentData = "";
+            let rest = line.slice("@function".length).trim();
+            if (rest.startsWith(":")) {
+                rest = rest.slice(1).trim();
+            }
+            currentFunc = parseFunctionHeader(rest);
+            continue;
+        }
+        if (line.startsWith("@query")) {
+            finishCurrent();
+            fieldBlock = false;
+            currentData = "";
+            let rest = line.slice("@query".length).trim();
+            if (rest.startsWith(":")) {
+                rest = rest.slice(1).trim();
+            }
+            currentQuery = parseQueryHeader(rest);
+            continue;
+        }
+
         if (line.startsWith("@field")) {
             fieldBlock = false;
             currentData = "";
@@ -279,7 +356,7 @@ export function parseSchema(text: string): Document {
     }
 
     finishCurrent();
-    const doc = new Document(schemas, data);
+    const doc = new Document(schemas, data, functions, queries);
     doc.finalize();
     return doc;
 }
@@ -646,4 +723,50 @@ function bytesToBase64(bytes: Uint8Array): string {
         return btoa(binary);
     }
     throw new Error("scrt: base64 encoding unavailable in this environment");
+}
+
+function parseFunctionHeader(line: string): FunctionDef {
+    const parenOpen = line.indexOf("(");
+    const parenClose = line.lastIndexOf(")");
+    if (parenOpen === -1 || parenClose === -1 || parenClose < parenOpen) {
+        throw new Error("scrt: invalid function signature");
+    }
+    const name = line.slice(0, parenOpen).trim();
+    const argsStr = line.slice(parenOpen + 1, parenClose);
+    const ret = line.slice(parenClose + 1).trim();
+    const args = parseArgs(argsStr);
+    return new FunctionDef(name, args, ret);
+}
+
+function parseQueryHeader(line: string): QueryDef {
+    const parenOpen = line.indexOf("(");
+    if (parenOpen === -1) {
+        return new QueryDef(line.trim(), []);
+    }
+    const parenClose = line.lastIndexOf(")");
+    if (parenClose === -1 || parenClose < parenOpen) {
+        throw new Error("scrt: invalid query signature");
+    }
+    const name = line.slice(0, parenOpen).trim();
+    const argsStr = line.slice(parenOpen + 1, parenClose);
+    const args = parseArgs(argsStr);
+    return new QueryDef(name, args);
+}
+
+function parseArgs(str: string): Argument[] {
+    const s = str.trim();
+    if (!s) return [];
+    const parts = s.split(",");
+    const args: Argument[] = [];
+    for (const p of parts) {
+        const trimmed = p.trim();
+        const idx = trimmed.lastIndexOf(" ");
+        if (idx === -1) {
+            throw new Error(`scrt: invalid argument format: ${p}`);
+        }
+        const name = trimmed.slice(0, idx).trim();
+        const typ = trimmed.slice(idx + 1).trim();
+        args.push({ name, type: typ });
+    }
+    return args;
 }
