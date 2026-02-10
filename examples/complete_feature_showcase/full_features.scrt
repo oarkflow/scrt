@@ -26,6 +26,9 @@
 @index:IdxUserEmail(Email) unique
 
 @function:CalculateDiscount(price float64, percent float64) float64
+if (price > 1000) {
+return (price * percent / 100.0) - 20
+}
 return price * percent / 100.0
 
 @function:CreateUser(uName string, uEmail string) User
@@ -42,6 +45,18 @@ return true
 
 @function:FormatFullName(first string, last string) string
 return last + ", " + first
+
+@function:StringTest(s string) string
+return upper(s) + "_" + len(s)
+
+@function:TestLoop(limit int) int
+count = 0
+sum = 0
+while (count < limit) {
+count = count + 1
+sum = sum + count
+}
+return sum
 
 @function:UpdateProductStock(pSku string, pQty int) bool
 UPDATE Product SET StockLevel = pQty WHERE SKU = pSku
@@ -71,3 +86,4 @@ ORDER BY o.OrderDate DESC
 2, "bob_builder", "bob@example.com", 2023-02-20T14:30:00Z, true
 3, "null_guy", "null@example.com", null, true
 4, "dave_interpreted", "dave@example.com", 2026-02-10T09:04:42+05:45, true
+
