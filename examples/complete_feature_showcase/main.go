@@ -9,15 +9,26 @@ import (
 
 func main() {
 	// ... (Same setup as before)
-	f, err := os.Open("full_features.scrt")
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
+	doc := schema.NewDocument()
 
-	doc, err := schema.Parse(f)
-	if err != nil {
-		panic(err)
+	// Check if separated files exist
+	if _, err := os.Stat("metadata.scrt"); err == nil {
+		fmt.Println("Found metadata.scrt, loading separated schema...")
+		if err := doc.LoadFile("metadata.scrt"); err != nil {
+			panic(err)
+		}
+		if _, err := os.Stat("data.scrt"); err == nil {
+			fmt.Println("Found data.scrt, loading separated data...")
+			if err := doc.LoadFile("data.scrt"); err != nil {
+				panic(err)
+			}
+		}
+	} else {
+		// Fallback to monolithic file
+		fmt.Println("Loading full_features.scrt...")
+		if err := doc.LoadFile("full_features.scrt"); err != nil {
+			panic(err)
+		}
 	}
 
 	fmt.Println("=== SCRT Interpreter Show case ===")
@@ -74,10 +85,20 @@ func main() {
 
 	// Save
 	fmt.Println("\n--- Saving Data ---")
-	if err := doc.Save("full_features.scrt"); err != nil {
-		fmt.Printf("Error saving: %v\n", err)
+	// If we loaded separated files, we should probably save them separated too.
+	// But simply saving data.scrt if it exists is a good basic behavior.
+	if _, err := os.Stat("data.scrt"); err == nil {
+		if err := doc.SaveData("data.scrt"); err != nil {
+			fmt.Printf("Error saving data.scrt: %v\n", err)
+		} else {
+			fmt.Println("Saved updates to data.scrt")
+		}
 	} else {
-		fmt.Println("Saved to full_features.scrt")
+		if err := doc.Save("full_features.scrt"); err != nil {
+			fmt.Printf("Error saving: %v\n", err)
+		} else {
+			fmt.Println("Saved to full_features.scrt")
+		}
 	}
 }
 

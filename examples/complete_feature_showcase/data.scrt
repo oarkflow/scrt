@@ -1,0 +1,14 @@
+@OrderItem
+100, "GIZMO-001", 2, 59.98
+100, "WIDGET-X", 1, 15.5
+
+@Product
+"GIZMO-001", "Super Gizmo", 29.99, 100
+"WIDGET-X", "Mega Widget", 15.5, 500
+
+@User
+1, "alice_wonder", "alice@example.com", 2023-01-15T10:00:00Z, true
+2, "bob_builder", "bob@example.com", 2023-02-20T14:30:00Z, true
+3, "null_guy", "null@example.com", null, true
+4, "dave_interpreted", "dave@example.com", 2026-02-13T10:24:37+05:45, true
+

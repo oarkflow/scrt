@@ -12,13 +12,16 @@ import (
 
 // Parse reads schema definitions from the SCRT DSL.
 func Parse(r io.Reader) (*Document, error) {
-	scanner := bufio.NewScanner(r)
-	doc := &Document{
-		Schemas:   make(map[string]*Schema),
-		Data:      make(map[string][]map[string]interface{}),
-		Functions: make(map[string]*Function),
-		Queries:   make(map[string]*Query),
+	doc := NewDocument()
+	if err := doc.Load(r); err != nil {
+		return nil, err
 	}
+	return doc, nil
+}
+
+// Load reads definitions and data from the reader into the document.
+func (doc *Document) Load(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
 
 	var current *Schema
 	var currentFunc *Function
@@ -75,6 +78,15 @@ func Parse(r io.Reader) (*Document, error) {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
+
+		if awaitingName {
+			if err := startSchema(line); err != nil {
+				return err
+			}
+			awaitingName = false
+			continue
+		}
+
 		// logic moved to switch
 
 		switch {
@@ -90,7 +102,7 @@ func Parse(r io.Reader) (*Document, error) {
 				continue
 			}
 			if err := startSchema(rest); err != nil {
-				return nil, err
+				return err
 			}
 
 		case strings.HasPrefix(line, "@function"):
@@ -102,10 +114,10 @@ func Parse(r io.Reader) (*Document, error) {
 			}
 			f, err := parseFunctionHeader(rest)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if err := finishCurrent(); err != nil {
-				return nil, err
+				return err
 			}
 			currentFunc = f
 			continue
@@ -119,10 +131,10 @@ func Parse(r io.Reader) (*Document, error) {
 			}
 			q, err := parseQueryHeader(rest)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if err := finishCurrent(); err != nil {
-				return nil, err
+				return err
 			}
 			currentQuery = q
 			continue
@@ -131,11 +143,11 @@ func Parse(r io.Reader) (*Document, error) {
 			fieldBlock = false
 			currentDataSchema = ""
 			if current == nil {
-				return nil, errors.New("@field outside of schema")
+				return errors.New("@field outside of schema")
 			}
 			field, err := parseField(strings.TrimSpace(strings.TrimPrefix(line, "@field")))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			current.Fields = append(current.Fields, field)
 
@@ -143,17 +155,17 @@ func Parse(r io.Reader) (*Document, error) {
 			fieldBlock = false
 			currentDataSchema = ""
 			if current == nil {
-				return nil, errors.New("@index outside of schema")
+				return errors.New("@index outside of schema")
 			}
 			idx, err := parseIndex(strings.TrimSpace(strings.TrimPrefix(line, "@index")))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			current.Indexes = append(current.Indexes, idx)
 
 		case strings.HasPrefix(strings.ToLower(line), "fields"):
 			if current == nil {
-				return nil, errors.New("fields block outside of schema")
+				return errors.New("fields block outside of schema")
 			}
 			fieldBlock = true
 			continue
@@ -162,7 +174,7 @@ func Parse(r io.Reader) (*Document, error) {
 			fieldBlock = false
 			awaitingName = false
 			if err := finishCurrent(); err != nil {
-				return nil, err
+				return err
 			}
 
 			// Check if it's a data row (contains =)
@@ -199,7 +211,7 @@ func Parse(r io.Reader) (*Document, error) {
 				if fieldBlock && current != nil {
 					field, err := parseField(line)
 					if err != nil {
-						return nil, err
+						return err
 					}
 					current.Fields = append(current.Fields, field)
 				}
@@ -209,35 +221,36 @@ func Parse(r io.Reader) (*Document, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	if awaitingName {
-		return nil, errors.New("schema name expected after @schema")
+		return errors.New("schema name expected after @schema")
 	}
 	if err := finishCurrent(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := doc.finalize(); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Step 2: Parse data rows after all schemas are loaded and resolved
 	for schemaName, lines := range pendingData {
 		sch, ok := doc.Schemas[schemaName]
 		if !ok {
-			// Warn or invalid data section? For now, skip if schema triggers later
+			// If loading separate files, it's ok that schema was parsed before (and thus in doc.Schemas).
+			// If schema is missing entirely, we can't parse the row.
 			continue
 		}
 		for _, line := range lines {
 			row, err := parseDataRow(line, sch)
 			if err != nil {
-				return nil, fmt.Errorf("parsing data row for %s: %w", schemaName, err)
+				return fmt.Errorf("parsing data row for %s: %w", schemaName, err)
 			}
 			doc.Data[schemaName] = append(doc.Data[schemaName], row)
 		}
 	}
 
-	return doc, nil
+	return nil
 }
 
 func parseField(body string) (Field, error) {

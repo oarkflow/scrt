@@ -19,6 +19,65 @@ func (d *Document) Save(path string) error {
 	return d.Write(f)
 }
 
+// SaveData writes only the data sections to a file.
+func (d *Document) SaveData(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return d.WriteData(f)
+}
+
+// WriteData writes only the data sections to an io.Writer.
+func (d *Document) WriteData(w io.Writer) error {
+	var schemaNames []string
+	for name := range d.Schemas {
+		schemaNames = append(schemaNames, name)
+	}
+	sort.Strings(schemaNames)
+
+	for _, name := range schemaNames {
+		rows := d.Data[name]
+		if len(rows) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "@%s\n", name)
+
+		schema := d.Schemas[name]
+		for _, row := range rows {
+			var vals []string
+			for _, field := range schema.Fields {
+				val, ok := row[field.Name]
+				if !ok || val == nil {
+					vals = append(vals, "null")
+					continue
+				}
+
+				switch v := val.(type) {
+				case string:
+					vals = append(vals, fmt.Sprintf("%q", v))
+				case []byte:
+					vals = append(vals, fmt.Sprintf("%q", string(v)))
+				case time.Time:
+					if field.Kind == KindDate {
+						vals = append(vals, v.Format("2006-01-02"))
+					} else if field.Kind == KindDateTime {
+						vals = append(vals, v.Format("2006-01-02T15:04:05"))
+					} else {
+						vals = append(vals, v.Format(time.RFC3339))
+					}
+				default:
+					vals = append(vals, fmt.Sprintf("%v", v))
+				}
+			}
+			fmt.Fprintln(w, strings.Join(vals, ", "))
+		}
+		fmt.Fprintln(w)
+	}
+	return nil
+}
+
 // Write writes the document to an io.Writer.
 func (d *Document) Write(w io.Writer) error {
 	// 1. Write Schemas
@@ -154,7 +213,13 @@ func (d *Document) Write(w io.Writer) error {
 				case []byte:
 					vals = append(vals, fmt.Sprintf("%q", string(v)))
 				case time.Time:
-					vals = append(vals, v.Format(time.RFC3339))
+					if field.Kind == KindDate {
+						vals = append(vals, v.Format("2006-01-02"))
+					} else if field.Kind == KindDateTime {
+						vals = append(vals, v.Format("2006-01-02T15:04:05"))
+					} else {
+						vals = append(vals, v.Format(time.RFC3339))
+					}
 				default:
 					vals = append(vals, fmt.Sprintf("%v", v))
 				}

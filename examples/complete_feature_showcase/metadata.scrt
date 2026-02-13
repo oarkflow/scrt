@@ -1,0 +1,74 @@
+@schema:Order
+@field OrderID uint64 serial
+@field Customer ref:User:ID
+@field OrderDate datetime
+@field TotalAmount float64
+
+@schema:OrderItem
+@field OrderID ref:Order:OrderID
+@field ProductRef ref:Product:SKU
+@field Quantity int
+@field Subtotal float64
+
+@schema:Product
+@field SKU string pk
+@field Name string
+@field Price float64
+@field StockLevel int
+@index:IdxProductName(Name)
+
+@schema:User
+@field ID uint64 serial pk
+@field Username string unique
+@field Email string unique
+@field CreatedAt ?timestamptz default="now()"
+@field IsActive bool default=true
+@index:IdxUserEmail(Email) unique
+
+@function:CalculateDiscount(price float64, percent float64) float64
+if (price > 1000) {
+return (price * percent / 100.0) - 20
+}
+return price * percent / 100.0
+
+@function:CreateUser(uName string, uEmail string) User
+user = new User
+user.Username = uName
+user.Email = uEmail
+user.IsActive = true
+insert user
+return user
+
+@function:DeleteOrder(oID int) bool
+DELETE FROM Order WHERE OrderID = oID
+return true
+
+@function:FormatFullName(first string, last string) string
+return last + ", " + first
+
+@function:StringTest(s string) string
+return upper(s) + "_" + len(s)
+
+@function:TestLoop(limit int) int
+count = 0
+sum = 0
+while (count < limit) {
+count = count + 1
+sum = sum + count
+}
+return sum
+
+@function:UpdateProductStock(pSku string, pQty int) bool
+UPDATE Product SET StockLevel = pQty WHERE SKU = pSku
+return true
+
+@query:GetLowStockProducts(threshold int)
+SELECT Name, StockLevel
+FROM Product
+WHERE StockLevel < :threshold
+
+@query:GetUserOrders(userID int)
+SELECT o.OrderID, o.OrderDate, o.TotalAmount
+FROM Order o
+WHERE o.Customer = :userID
+ORDER BY o.OrderDate DESC

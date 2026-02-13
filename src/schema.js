@@ -186,7 +186,7 @@ export class Document {
     functions;
     queries;
     source;
-    constructor(schemas, data, functions, queries, source) {
+    constructor(schemas = new Map(), data = new Map(), functions = new Map(), queries = new Map(), source) {
         this.schemas = schemas;
         this.data = data;
         this.functions = functions;
@@ -204,160 +204,163 @@ export class Document {
             resolveSchemaKinds(this, schema);
         }
     }
+    load(text) {
+        const lines = text.split(/\r?\n/).map((line) => line.trim());
+        const schemas = this.schemas;
+        const data = this.data;
+        const functions = this.functions;
+        const queries = this.queries;
+        let current;
+        let currentFunc;
+        let currentQuery;
+        let awaitingName = false;
+        let currentData = "";
+        let fieldBlock = false;
+        const finishCurrent = () => {
+            if (current) {
+                if (schemas.has(current.name)) {
+                    throw new Error(`scrt: duplicate schema ${current.name}`);
+                }
+                schemas.set(current.name, current);
+                current = undefined;
+            }
+            if (currentFunc) {
+                if (functions.has(currentFunc.name)) {
+                    throw new Error(`scrt: duplicate function ${currentFunc.name}`);
+                }
+                functions.set(currentFunc.name, currentFunc);
+                currentFunc = undefined;
+            }
+            if (currentQuery) {
+                if (queries.has(currentQuery.name)) {
+                    throw new Error(`scrt: duplicate query ${currentQuery.name}`);
+                }
+                queries.set(currentQuery.name, currentQuery);
+                currentQuery = undefined;
+            }
+        };
+        const startSchema = (name) => {
+            finishCurrent();
+            fieldBlock = false;
+            if (!name) {
+                throw new Error("scrt: schema name cannot be empty");
+            }
+            current = new Schema(name, []);
+        };
+        for (const line of lines) {
+            if (!line) {
+                continue;
+            }
+            if (line.startsWith("#")) {
+                continue;
+            }
+            if (currentFunc && !line.startsWith("@")) {
+                if (currentFunc.body)
+                    currentFunc.body += "\n";
+                currentFunc.body += line;
+                continue;
+            }
+            if (currentQuery && !line.startsWith("@")) {
+                if (currentQuery.sql)
+                    currentQuery.sql += "\n";
+                currentQuery.sql += line;
+                continue;
+            }
+            if (fieldBlock && current && !currentData && !line.startsWith("@")) {
+                const field = parseField(line);
+                current.fields.push(field);
+                continue;
+            }
+            if (awaitingName) {
+                startSchema(line);
+                awaitingName = false;
+                fieldBlock = false;
+                continue;
+            }
+            if (line.startsWith("@schema")) {
+                fieldBlock = false;
+                currentData = "";
+                let rest = line.slice("@schema".length).trim();
+                if (rest.startsWith(":")) {
+                    rest = rest.slice(1).trim();
+                }
+                if (!rest) {
+                    awaitingName = true;
+                    continue;
+                }
+                startSchema(rest);
+                continue;
+            }
+            if (line.startsWith("@function")) {
+                finishCurrent();
+                fieldBlock = false;
+                currentData = "";
+                let rest = line.slice("@function".length).trim();
+                if (rest.startsWith(":")) {
+                    rest = rest.slice(1).trim();
+                }
+                currentFunc = parseFunctionHeader(rest);
+                continue;
+            }
+            if (line.startsWith("@query")) {
+                finishCurrent();
+                fieldBlock = false;
+                currentData = "";
+                let rest = line.slice("@query".length).trim();
+                if (rest.startsWith(":")) {
+                    rest = rest.slice(1).trim();
+                }
+                currentQuery = parseQueryHeader(rest);
+                continue;
+            }
+            if (line.startsWith("@field")) {
+                fieldBlock = false;
+                currentData = "";
+                if (!current) {
+                    throw new Error("scrt: @field outside schema block");
+                }
+                const field = parseField(line.slice("@field".length).trim());
+                current.fields.push(field);
+                continue;
+            }
+            if (line.toLowerCase().startsWith("fields")) {
+                if (!current) {
+                    throw new Error("scrt: fields block outside schema");
+                }
+                fieldBlock = true;
+                continue;
+            }
+            if (line.startsWith("@")) {
+                awaitingName = false;
+                fieldBlock = false;
+                finishCurrent();
+                if (line.includes("=") && currentData) {
+                    const sch = schemas.get(currentData);
+                    if (sch) {
+                        const row = parseDataRow(line, sch);
+                        pushDataRow(data, currentData, row);
+                    }
+                    continue;
+                }
+                currentData = line.slice(1).trim();
+                continue;
+            }
+            if (currentData) {
+                const sch = schemas.get(currentData);
+                if (!sch) {
+                    continue;
+                }
+                const row = parseDataRow(line, sch);
+                pushDataRow(data, currentData, row);
+                continue;
+            }
+        }
+        finishCurrent();
+    }
 }
 export function parseSchema(text) {
-    const lines = text.split(/\r?\n/).map((line) => line.trim());
-    const schemas = new Map();
-    const data = new Map();
-    const functions = new Map();
-    const queries = new Map();
-    let current;
-    let currentFunc;
-    let currentQuery;
-    let awaitingName = false;
-    let currentData = "";
-    let fieldBlock = false;
-    const finishCurrent = () => {
-        if (current) {
-            if (schemas.has(current.name)) {
-                throw new Error(`scrt: duplicate schema ${current.name}`);
-            }
-            schemas.set(current.name, current);
-            current = undefined;
-        }
-        if (currentFunc) {
-            if (functions.has(currentFunc.name)) {
-                throw new Error(`scrt: duplicate function ${currentFunc.name}`);
-            }
-            functions.set(currentFunc.name, currentFunc);
-            currentFunc = undefined;
-        }
-        if (currentQuery) {
-            if (queries.has(currentQuery.name)) {
-                throw new Error(`scrt: duplicate query ${currentQuery.name}`);
-            }
-            queries.set(currentQuery.name, currentQuery);
-            currentQuery = undefined;
-        }
-    };
-    const startSchema = (name) => {
-        finishCurrent();
-        fieldBlock = false;
-        if (!name) {
-            throw new Error("scrt: schema name cannot be empty");
-        }
-        current = new Schema(name, []);
-    };
-    for (const line of lines) {
-        if (!line) {
-            continue;
-        }
-        if (line.startsWith("#")) {
-            continue;
-        }
-        if (currentFunc && !line.startsWith("@")) {
-            if (currentFunc.body)
-                currentFunc.body += "\n";
-            currentFunc.body += line;
-            continue;
-        }
-        if (currentQuery && !line.startsWith("@")) {
-            if (currentQuery.sql)
-                currentQuery.sql += "\n";
-            currentQuery.sql += line;
-            continue;
-        }
-        if (fieldBlock && current && !currentData && !line.startsWith("@")) {
-            const field = parseField(line);
-            current.fields.push(field);
-            continue;
-        }
-        if (awaitingName) {
-            startSchema(line);
-            awaitingName = false;
-            fieldBlock = false;
-            continue;
-        }
-        if (line.startsWith("@schema")) {
-            fieldBlock = false;
-            currentData = "";
-            let rest = line.slice("@schema".length).trim();
-            if (rest.startsWith(":")) {
-                rest = rest.slice(1).trim();
-            }
-            if (!rest) {
-                awaitingName = true;
-                continue;
-            }
-            startSchema(rest);
-            continue;
-        }
-        if (line.startsWith("@function")) {
-            finishCurrent();
-            fieldBlock = false;
-            currentData = "";
-            let rest = line.slice("@function".length).trim();
-            if (rest.startsWith(":")) {
-                rest = rest.slice(1).trim();
-            }
-            currentFunc = parseFunctionHeader(rest);
-            continue;
-        }
-        if (line.startsWith("@query")) {
-            finishCurrent();
-            fieldBlock = false;
-            currentData = "";
-            let rest = line.slice("@query".length).trim();
-            if (rest.startsWith(":")) {
-                rest = rest.slice(1).trim();
-            }
-            currentQuery = parseQueryHeader(rest);
-            continue;
-        }
-        if (line.startsWith("@field")) {
-            fieldBlock = false;
-            currentData = "";
-            if (!current) {
-                throw new Error("scrt: @field outside schema block");
-            }
-            const field = parseField(line.slice("@field".length).trim());
-            current.fields.push(field);
-            continue;
-        }
-        if (line.toLowerCase().startsWith("fields")) {
-            if (!current) {
-                throw new Error("scrt: fields block outside schema");
-            }
-            fieldBlock = true;
-            continue;
-        }
-        if (line.startsWith("@")) {
-            awaitingName = false;
-            fieldBlock = false;
-            finishCurrent();
-            if (line.includes("=") && currentData) {
-                const sch = schemas.get(currentData);
-                if (sch) {
-                    const row = parseDataRow(line, sch);
-                    pushDataRow(data, currentData, row);
-                }
-                continue;
-            }
-            currentData = line.slice(1).trim();
-            continue;
-        }
-        if (currentData) {
-            const sch = schemas.get(currentData);
-            if (!sch) {
-                continue;
-            }
-            const row = parseDataRow(line, sch);
-            pushDataRow(data, currentData, row);
-            continue;
-        }
-    }
-    finishCurrent();
-    const doc = new Document(schemas, data, functions, queries);
+    const doc = new Document();
+    doc.load(text);
     doc.finalize();
     return doc;
 }

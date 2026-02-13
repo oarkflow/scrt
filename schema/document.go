@@ -2,11 +2,21 @@ package schema
 
 // Document is the top-level container for schemas parsed from a .scrt file.
 type Document struct {
-	Schemas map[string]*Schema
-	Data    map[string][]map[string]interface{} // schema name -> rows
+	Schemas   map[string]*Schema
+	Data      map[string][]map[string]interface{} // schema name -> rows
 	Functions map[string]*Function
 	Queries   map[string]*Query
-	Source  string
+	Source    string
+}
+
+// NewDocument creates an empty Document.
+func NewDocument() *Document {
+	return &Document{
+		Schemas:   make(map[string]*Schema),
+		Data:      make(map[string][]map[string]interface{}),
+		Functions: make(map[string]*Function),
+		Queries:   make(map[string]*Query),
+	}
 }
 
 // Schema returns a schema by name.

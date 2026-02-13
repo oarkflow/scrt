@@ -72,9 +72,10 @@ export declare class Document {
     readonly functions: Map<string, FunctionDef>;
     readonly queries: Map<string, QueryDef>;
     source?: string | undefined;
-    constructor(schemas: Map<string, Schema>, data: Map<string, Record<string, unknown>[]>, functions: Map<string, FunctionDef>, queries: Map<string, QueryDef>, source?: string | undefined);
+    constructor(schemas?: Map<string, Schema>, data?: Map<string, Record<string, unknown>[]>, functions?: Map<string, FunctionDef>, queries?: Map<string, QueryDef>, source?: string | undefined);
     schema(name: string): Schema | undefined;
     records(name: string): Record<string, unknown>[] | undefined;
     finalize(): void;
+    load(text: string): void;
 }
 export declare function parseSchema(text: string): Document;

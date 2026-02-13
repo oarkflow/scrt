@@ -99,6 +99,10 @@ func ParseDateTime(raw string) (time.Time, error) {
 	if trimmed == "" {
 		return time.Time{}, fmt.Errorf("temporal: empty datetime literal")
 	}
+	// Try parsing with timezone first (e.g. RFC3339) and normalize to UTC
+	if t, err := parseZoneLayouts(trimmed, timestampZoneLayouts); err == nil {
+		return t.UTC(), nil
+	}
 	if t, err := parseNoZoneLayouts(trimmed, datetimeLayouts); err == nil {
 		return t.UTC(), nil
 	}
