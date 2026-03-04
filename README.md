@@ -51,6 +51,61 @@ Example:
 
 The same rules apply to every schema in the file, so datasets stay terse even when many reference or serial columns exist.
 
+### Advanced Field Constraints
+
+SCRT now supports richer field annotations while staying backward compatible:
+
+```text
+@schema:Account
+@field ID uint64 serial pk
+@field Username string minlength:3 maxlength:32 pattern:"^[a-z0-9_]+$" description:"Public handle"
+@field Email string format:email unique
+@field Status string enum:"Active|Inactive|Blocked" default="Active"
+@field Age ?int min:0 max:150
+```
+
+Reference shorthand is also supported:
+
+```text
+@field Customer User           # infers target field via pk, then ID
+@field Product ref:Product:SKU # explicit reference form
+```
+
+Complex type declarations are available in schema metadata:
+
+```text
+@field Tags []string
+@field Attributes map[string]string
+@field Shipping object:Address
+```
+
+Relationship directives are also supported:
+
+```text
+@field UserID uint64
+@relation UserID User.ID onDelete:restrict onUpdate:cascade
+```
+
+`scrt-server` enforces `@relation` actions during row and payload deletes/updates:
+- `onDelete`: `restrict`, `cascade`, `set_null`, `no_action`
+- `onUpdate`: `restrict`, `cascade`, `set_null`, `no_action`
+
+Inline relation actions on reference fields are supported and can replace `@relation`:
+
+```text
+@field UserID ref:User:ID onDelete:cascade onUpdate:restrict
+```
+
+Use Go validation helpers after parsing:
+
+```go
+if err := schemaDoc.ValidateData(); err != nil {
+  log.Fatalf("invalid data: %v", err)
+}
+```
+
+See [DSL_ROADMAP.md](DSL_ROADMAP.md) for the staged plan toward a comprehensive schema language.
+
 ## Package Layout
 
 ```
@@ -257,6 +312,35 @@ done.
     { MsgID: 3n, User: 999n, Text: "update" },
   ]);
   await client.uploadRecords(schemaName, updatedPayload, { mode: "replace" });
+
+## Local DB Engine Example (Index + Query + Fulltext + Update/Delete)
+
+Run a complete local example that persists SCRT payloads, performs indexed lookups,
+full-text searches, row updates, row deletes, and concurrent read/query workloads:
+
+```bash
+go run ./examples/db_engine/main.go
+```
+
+This example stores data under `./data` (relative to the example directory), builds
+indexes on `ID` and `Email`, applies row-level mutations without rewriting the base
+payload, and queries the effective view.
+
+It is wired directly through SCRT core modules:
+
+- `schema.Document.LoadFile(...)` for `metadata.scrt` + `data.scrt`
+- `Document.Schema("User")` + `Document.Records("User")`
+- `scrt.Marshal(schema, records)` for canonical SCRT binary payloads
+- `storage.SnapshotBackend` for persistence, index lookup, mutation log updates, and full-text query
+
+## Storage Benchmarks
+
+High-performance storage benchmarks (parallel indexed lookup, replacement updates,
+full-text search, and auto-increment counter contention):
+
+```bash
+go test ./storage -bench SnapshotStore -benchmem
+```
 
    // Optional: pull the compact bundle (schema text + payload) in one go.
   const bundle = await client.fetchBundle(schemaName);

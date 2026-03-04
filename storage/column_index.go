@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"sync"
 
 	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
@@ -25,6 +26,7 @@ type IndexSpec struct {
 
 // ColumnIndex materializes a numeric key -> rowID lookup table.
 type ColumnIndex struct {
+	mu            sync.RWMutex
 	Field         string
 	Unique        bool
 	Kind          schema.FieldKind
@@ -32,11 +34,87 @@ type ColumnIndex struct {
 	stringEntries map[string]uint64
 }
 
+// UpsertUint inserts or replaces a uint/ref key mapping.
+func (ci *ColumnIndex) UpsertUint(key uint64, rowID uint64) error {
+	if ci == nil {
+		return fmt.Errorf("storage: column index is nil")
+	}
+	ci.mu.Lock()
+	defer ci.mu.Unlock()
+	if ci.Kind != schema.KindUint64 && ci.Kind != schema.KindRef {
+		return fmt.Errorf("storage: index %s is not uint/ref", ci.Field)
+	}
+	if ci.uintEntries == nil {
+		ci.uintEntries = make(map[uint64]uint64)
+	}
+	if ci.Unique {
+		if existing, ok := ci.uintEntries[key]; ok && existing != rowID {
+			return fmt.Errorf("storage: duplicate key %d for field %s", key, ci.Field)
+		}
+	}
+	ci.uintEntries[key] = rowID
+	return nil
+}
+
+// DeleteUint removes a uint/ref key mapping if it points to rowID.
+func (ci *ColumnIndex) DeleteUint(key uint64, rowID uint64) {
+	if ci == nil {
+		return
+	}
+	ci.mu.Lock()
+	defer ci.mu.Unlock()
+	if len(ci.uintEntries) == 0 {
+		return
+	}
+	if existing, ok := ci.uintEntries[key]; ok && existing == rowID {
+		delete(ci.uintEntries, key)
+	}
+}
+
+// UpsertString inserts or replaces a string key mapping.
+func (ci *ColumnIndex) UpsertString(key string, rowID uint64) error {
+	if ci == nil {
+		return fmt.Errorf("storage: column index is nil")
+	}
+	ci.mu.Lock()
+	defer ci.mu.Unlock()
+	if ci.Kind != schema.KindString {
+		return fmt.Errorf("storage: index %s is not string", ci.Field)
+	}
+	if ci.stringEntries == nil {
+		ci.stringEntries = make(map[string]uint64)
+	}
+	if ci.Unique {
+		if existing, ok := ci.stringEntries[key]; ok && existing != rowID {
+			return fmt.Errorf("storage: duplicate key %s for field %s", key, ci.Field)
+		}
+	}
+	ci.stringEntries[key] = rowID
+	return nil
+}
+
+// DeleteString removes a string key mapping if it points to rowID.
+func (ci *ColumnIndex) DeleteString(key string, rowID uint64) {
+	if ci == nil {
+		return
+	}
+	ci.mu.Lock()
+	defer ci.mu.Unlock()
+	if len(ci.stringEntries) == 0 {
+		return
+	}
+	if existing, ok := ci.stringEntries[key]; ok && existing == rowID {
+		delete(ci.stringEntries, key)
+	}
+}
+
 // LookupUint returns the rowID for a numeric key.
 func (ci *ColumnIndex) LookupUint(key uint64) (uint64, bool) {
 	if ci == nil {
 		return 0, false
 	}
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
 	rowID, ok := ci.uintEntries[key]
 	return rowID, ok
 }
@@ -46,6 +124,8 @@ func (ci *ColumnIndex) LookupString(key string) (uint64, bool) {
 	if ci == nil {
 		return 0, false
 	}
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
 	rowID, ok := ci.stringEntries[key]
 	return rowID, ok
 }
@@ -55,12 +135,19 @@ func (ci *ColumnIndex) EntryCount() int {
 	if ci == nil {
 		return 0
 	}
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
 	return len(ci.uintEntries) + len(ci.stringEntries)
 }
 
 // MaxKey returns the highest key present in the index.
 func (ci *ColumnIndex) MaxKey() (uint64, bool) {
-	if ci == nil || len(ci.uintEntries) == 0 {
+	if ci == nil {
+		return 0, false
+	}
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
+	if len(ci.uintEntries) == 0 {
 		return 0, false
 	}
 	var max uint64
@@ -160,6 +247,8 @@ func (ci *ColumnIndex) Persist(w io.Writer) error {
 	if ci == nil {
 		return fmt.Errorf("storage: column index is nil")
 	}
+	ci.mu.RLock()
+	defer ci.mu.RUnlock()
 	var header [4 + 2 + 2 + 1 + 1 + 8]byte
 	copy(header[:4], columnIndexMagic)
 	binary.LittleEndian.PutUint16(header[4:6], columnIndexVersion)

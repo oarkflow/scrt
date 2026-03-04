@@ -283,6 +283,10 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		s.handleRecordRow(w, r, schemaName, fieldName, key)
 		return
 	}
+	if len(parts) >= 2 && strings.EqualFold(parts[1], "search") {
+		s.handleRecordSearch(w, r, schemaName)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		payload, err := s.store.LoadPayload(schemaName)
@@ -355,6 +359,27 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
+		doc, _, _, err := s.registry.Snapshot(schemaName)
+		if err != nil {
+			statusFromError(w, err)
+			return
+		}
+		sch, ok := doc.Schema(schemaName)
+		if !ok {
+			http.Error(w, "unknown schema", http.StatusNotFound)
+			return
+		}
+		rows, err := s.loadRows(schemaName, sch)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, row := range rows {
+			if err := s.enforceDeleteRelations(schemaName, row); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+		}
 		s.registry.ClearPayload(schemaName)
 		if err := s.store.Delete(schemaName); err != nil && !errors.Is(err, os.ErrNotExist) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -421,24 +446,12 @@ func (s *server) handleRecordRow(w http.ResponseWriter, r *http.Request, schemaN
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	payload, err := s.store.LoadPayload(schemaName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			http.NotFound(w, r)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if len(payload) == 0 {
-		http.NotFound(w, r)
-		return
-	}
+	indexedLookup := key.kind == schema.KindUint64 || key.kind == schema.KindRef || key.kind == schema.KindString || key.kind == schema.KindTimestampTZ
 	switch r.Method {
 	case http.MethodGet:
-		record, found, err := findRecordRow(payload, sch, fieldIdx, key)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		record, found, lookupErr := s.lookupRecordByKey(schemaName, sch, fieldName, fieldIdx, key, indexedLookup)
+		if lookupErr != nil {
+			http.Error(w, lookupErr.Error(), http.StatusBadRequest)
 			return
 		}
 		if !found {
@@ -452,25 +465,72 @@ func (s *server) handleRecordRow(w http.ResponseWriter, r *http.Request, schemaN
 			"row":    record,
 		})
 	case http.MethodDelete:
-		updated, found, err := rewriteRecord(payload, sch, fieldIdx, key, nil, rowEditDelete)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		record, found, lookupErr := s.lookupRecordByKey(schemaName, sch, fieldName, fieldIdx, key, indexedLookup)
+		if lookupErr != nil {
+			http.Error(w, lookupErr.Error(), http.StatusBadRequest)
 			return
 		}
 		if !found {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := s.store.Persist(schemaName, sch, updated, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
-			http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
+		if err := s.enforceDeleteRelations(schemaName, record); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		if err := s.registry.SetPayload(schemaName, updated); err != nil {
-			statusFromError(w, err)
-			return
+		if indexedLookup {
+			if key.kind == schema.KindUint64 || key.kind == schema.KindRef {
+				found, err = s.store.DeleteByUintKey(schemaName, sch, fieldName, key.uintVal)
+			} else {
+				found, err = s.store.DeleteByStringKey(schemaName, sch, fieldName, key.strVal)
+			}
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if !found {
+				http.NotFound(w, r)
+				return
+			}
+		} else {
+			payload, loadErr := s.store.LoadPayload(schemaName)
+			if loadErr != nil {
+				if errors.Is(loadErr, os.ErrNotExist) {
+					http.NotFound(w, r)
+					return
+				}
+				http.Error(w, loadErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			updated, found, rewriteErr := rewriteRecord(payload, sch, fieldIdx, key, nil, rowEditDelete)
+			if rewriteErr != nil {
+				http.Error(w, rewriteErr.Error(), http.StatusBadRequest)
+				return
+			}
+			if !found {
+				http.NotFound(w, r)
+				return
+			}
+			if _, err := s.store.Persist(schemaName, sch, updated, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+				http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if err := s.registry.SetPayload(schemaName, updated); err != nil {
+				statusFromError(w, err)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodPatch, http.MethodPut:
+		beforeRow, found, lookupErr := s.lookupRecordByKey(schemaName, sch, fieldName, fieldIdx, key, indexedLookup)
+		if lookupErr != nil {
+			http.Error(w, lookupErr.Error(), http.StatusBadRequest)
+			return
+		}
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("read row payload: %v", err), http.StatusBadRequest)
@@ -486,27 +546,61 @@ func (s *server) handleRecordRow(w http.ResponseWriter, r *http.Request, schemaN
 			return
 		}
 		enforceKeyValue(rowMap, sch.Fields[fieldIdx], key)
+		if err := enforceReadOnlyFields(beforeRow, rowMap, sch); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if err := s.enforceUpdateRelations(schemaName, beforeRow, rowMap); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		replacement, err := scrt.Marshal(sch, []map[string]any{rowMap})
 		if err != nil {
 			http.Error(w, fmt.Sprintf("marshal row failed: %v", err), http.StatusBadRequest)
 			return
 		}
-		updated, found, err := rewriteRecord(payload, sch, fieldIdx, key, replacement, rowEditReplace)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if !found {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := s.store.Persist(schemaName, sch, updated, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
-			http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := s.registry.SetPayload(schemaName, updated); err != nil {
-			statusFromError(w, err)
-			return
+		if indexedLookup {
+			var found bool
+			if key.kind == schema.KindUint64 || key.kind == schema.KindRef {
+				found, err = s.store.ReplaceByUintKey(schemaName, sch, fieldName, key.uintVal, replacement)
+			} else {
+				found, err = s.store.ReplaceByStringKey(schemaName, sch, fieldName, key.strVal, replacement)
+			}
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if !found {
+				http.NotFound(w, r)
+				return
+			}
+		} else {
+			payload, loadErr := s.store.LoadPayload(schemaName)
+			if loadErr != nil {
+				if errors.Is(loadErr, os.ErrNotExist) {
+					http.NotFound(w, r)
+					return
+				}
+				http.Error(w, loadErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			updated, found, rewriteErr := rewriteRecord(payload, sch, fieldIdx, key, replacement, rowEditReplace)
+			if rewriteErr != nil {
+				http.Error(w, rewriteErr.Error(), http.StatusBadRequest)
+				return
+			}
+			if !found {
+				http.NotFound(w, r)
+				return
+			}
+			if _, err := s.store.Persist(schemaName, sch, updated, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+				http.Error(w, fmt.Sprintf("persist failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if err := s.registry.SetPayload(schemaName, updated); err != nil {
+				statusFromError(w, err)
+				return
+			}
 		}
 		writeJSON(w, map[string]any{
 			"schema": schemaName,
@@ -517,6 +611,327 @@ func (s *server) handleRecordRow(w http.ResponseWriter, r *http.Request, schemaN
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *server) handleRecordSearch(w http.ResponseWriter, r *http.Request, schemaName string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		http.Error(w, "search query required via ?q=", http.StatusBadRequest)
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		if parsed > 1000 {
+			parsed = 1000
+		}
+		limit = parsed
+	}
+	doc, _, _, err := s.registry.Snapshot(schemaName)
+	if err != nil {
+		statusFromError(w, err)
+		return
+	}
+	sch, ok := doc.Schema(schemaName)
+	if !ok {
+		http.Error(w, "unknown schema", http.StatusNotFound)
+		return
+	}
+	rowIDs, err := s.store.SearchFullText(schemaName, sch, query, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows := make([]map[string]any, 0, len(rowIDs))
+	row := codec.NewRow(sch)
+	for _, rowID := range rowIDs {
+		found, lookupErr := s.store.LookupRowEffective(schemaName, sch, rowID, row)
+		if lookupErr != nil {
+			http.Error(w, lookupErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if found {
+			rows = append(rows, rowToMap(row, sch))
+		}
+	}
+	writeJSON(w, map[string]any{
+		"schema": schemaName,
+		"query":  query,
+		"rows":   rows,
+	})
+}
+
+func (s *server) lookupRecordByKey(schemaName string, sch *schema.Schema, fieldName string, fieldIdx int, key recordKey, indexedLookup bool) (map[string]any, bool, error) {
+	if indexedLookup {
+		row := codec.NewRow(sch)
+		var found bool
+		var err error
+		if key.kind == schema.KindUint64 || key.kind == schema.KindRef {
+			found, err = s.store.LookupByUint(schemaName, sch, fieldName, key.uintVal, row)
+		} else {
+			found, err = s.store.LookupByString(schemaName, sch, fieldName, key.strVal, row)
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if !found {
+			return nil, false, nil
+		}
+		return rowToMap(row, sch), true, nil
+	}
+	payload, err := s.store.LoadPayload(schemaName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	rec, found, findErr := findRecordRow(payload, sch, fieldIdx, key)
+	if findErr != nil {
+		return nil, false, findErr
+	}
+	if !found {
+		return nil, false, nil
+	}
+	return rec, true, nil
+}
+
+func (s *server) enforceDeleteRelations(parentSchema string, parentRow map[string]any) error {
+	incoming, err := s.registryIncomingRelations(parentSchema)
+	if err != nil {
+		return err
+	}
+	for _, in := range incoming {
+		targetValue, ok := parentRow[in.Relation.TargetField]
+		if !ok || targetValue == nil {
+			continue
+		}
+		action := normalizeRelationAction(in.Relation.OnDelete)
+		if action == "no_action" {
+			continue
+		}
+		childDoc, _, _, err := s.registry.Snapshot(in.SourceSchema)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		childSchema, ok := childDoc.Schema(in.SourceSchema)
+		if !ok {
+			continue
+		}
+		rows, err := s.loadRows(in.SourceSchema, childSchema)
+		if err != nil {
+			return err
+		}
+		matched := make([]int, 0)
+		for i, row := range rows {
+			if valuesEqual(row[in.Relation.Field], targetValue) {
+				matched = append(matched, i)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		switch action {
+		case "restrict":
+			return fmt.Errorf("cannot delete %s: referenced by %s.%s", parentSchema, in.SourceSchema, in.Relation.Field)
+		case "cascade":
+			kept := make([]map[string]any, 0, len(rows)-len(matched))
+			matchMap := make(map[int]bool, len(matched))
+			for _, idx := range matched {
+				matchMap[idx] = true
+			}
+			for i, row := range rows {
+				if !matchMap[i] {
+					kept = append(kept, row)
+				}
+			}
+			if err := s.persistRows(in.SourceSchema, childSchema, kept); err != nil {
+				return err
+			}
+		case "set_null":
+			fieldDef, ok := childSchema.FieldByName(in.Relation.Field)
+			if !ok {
+				return fmt.Errorf("relation field %s.%s not found", in.SourceSchema, in.Relation.Field)
+			}
+			if !fieldDef.Nullable {
+				return fmt.Errorf("cannot set null on %s.%s: field is not nullable", in.SourceSchema, in.Relation.Field)
+			}
+			for _, idx := range matched {
+				rows[idx][in.Relation.Field] = nil
+			}
+			if err := s.persistRows(in.SourceSchema, childSchema, rows); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported onDelete action %s", action)
+		}
+	}
+	return nil
+}
+
+func (s *server) enforceUpdateRelations(parentSchema string, before, after map[string]any) error {
+	incoming, err := s.registryIncomingRelations(parentSchema)
+	if err != nil {
+		return err
+	}
+	for _, in := range incoming {
+		oldVal := before[in.Relation.TargetField]
+		newVal := after[in.Relation.TargetField]
+		if valuesEqual(oldVal, newVal) {
+			continue
+		}
+		action := normalizeRelationAction(in.Relation.OnUpdate)
+		if action == "no_action" {
+			continue
+		}
+		childDoc, _, _, err := s.registry.Snapshot(in.SourceSchema)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		childSchema, ok := childDoc.Schema(in.SourceSchema)
+		if !ok {
+			continue
+		}
+		rows, err := s.loadRows(in.SourceSchema, childSchema)
+		if err != nil {
+			return err
+		}
+		matched := make([]int, 0)
+		for i, row := range rows {
+			if valuesEqual(row[in.Relation.Field], oldVal) {
+				matched = append(matched, i)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		switch action {
+		case "restrict":
+			return fmt.Errorf("cannot update %s.%s: referenced by %s.%s", parentSchema, in.Relation.TargetField, in.SourceSchema, in.Relation.Field)
+		case "cascade":
+			for _, idx := range matched {
+				rows[idx][in.Relation.Field] = newVal
+			}
+			if err := s.persistRows(in.SourceSchema, childSchema, rows); err != nil {
+				return err
+			}
+		case "set_null":
+			fieldDef, ok := childSchema.FieldByName(in.Relation.Field)
+			if !ok {
+				return fmt.Errorf("relation field %s.%s not found", in.SourceSchema, in.Relation.Field)
+			}
+			if !fieldDef.Nullable {
+				return fmt.Errorf("cannot set null on %s.%s: field is not nullable", in.SourceSchema, in.Relation.Field)
+			}
+			for _, idx := range matched {
+				rows[idx][in.Relation.Field] = nil
+			}
+			if err := s.persistRows(in.SourceSchema, childSchema, rows); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported onUpdate action %s", action)
+		}
+	}
+	return nil
+}
+
+func (s *server) registryIncomingRelations(targetSchema string) ([]schema.IncomingRelation, error) {
+	summaries := s.registry.List()
+	out := make([]schema.IncomingRelation, 0)
+	for _, item := range summaries {
+		doc, _, _, err := s.registry.Snapshot(item.Name)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, doc.IncomingRelations(targetSchema, "")...)
+	}
+	return out, nil
+}
+
+func (s *server) loadRows(schemaName string, sch *schema.Schema) ([]map[string]any, error) {
+	payload, err := s.store.LoadPayload(schemaName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []map[string]any{}, nil
+		}
+		return nil, err
+	}
+	if len(payload) == 0 {
+		return []map[string]any{}, nil
+	}
+	var rows []map[string]any
+	if err := scrt.Unmarshal(payload, sch, &rows); err != nil {
+		return nil, fmt.Errorf("decode rows for %s: %w", schemaName, err)
+	}
+	return rows, nil
+}
+
+func (s *server) persistRows(schemaName string, sch *schema.Schema, rows []map[string]any) error {
+	payload, err := scrt.Marshal(sch, rows)
+	if err != nil {
+		return fmt.Errorf("marshal rows for %s: %w", schemaName, err)
+	}
+	if _, err := s.store.Persist(schemaName, sch, payload, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+		return fmt.Errorf("persist rows for %s: %w", schemaName, err)
+	}
+	if err := s.registry.SetPayload(schemaName, payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeRelationAction(action string) string {
+	normalized := strings.ToLower(strings.TrimSpace(action))
+	switch normalized {
+	case "":
+		return "restrict"
+	case "restrict", "cascade", "set_null", "no_action":
+		return normalized
+	default:
+		return "restrict"
+	}
+}
+
+func valuesEqual(a, b any) bool {
+	return fmt.Sprint(a) == fmt.Sprint(b)
+}
+
+func enforceReadOnlyFields(before, after map[string]any, sch *schema.Schema) error {
+	if sch == nil {
+		return nil
+	}
+	for _, field := range sch.Fields {
+		if !field.ReadOnly {
+			continue
+		}
+		beforeVal, hasBefore := before[field.Name]
+		afterVal, hasAfter := after[field.Name]
+		if !hasBefore && !hasAfter {
+			continue
+		}
+		if !valuesEqual(beforeVal, afterVal) {
+			return fmt.Errorf("field %s is readonly", field.Name)
+		}
+	}
+	return nil
 }
 
 type rowEditOp int
@@ -1037,6 +1452,7 @@ func (s *server) populateAutoValues(schemaName string, sch *schema.Schema, paylo
 	}
 	autoFields := make([]int, 0)
 	uuidFields := make([]int, 0)
+	nowDefaultFields := make([]int, 0)
 	for idx, field := range sch.Fields {
 		if field.AutoIncrement {
 			autoFields = append(autoFields, idx)
@@ -1044,8 +1460,11 @@ func (s *server) populateAutoValues(schemaName string, sch *schema.Schema, paylo
 		if requiresUUID(field) {
 			uuidFields = append(uuidFields, idx)
 		}
+		if field.Default != nil && strings.EqualFold(strings.TrimSpace(field.Default.Expression), "now()") {
+			nowDefaultFields = append(nowDefaultFields, idx)
+		}
 	}
-	if len(autoFields) == 0 && len(uuidFields) == 0 {
+	if len(autoFields) == 0 && len(uuidFields) == 0 && len(nowDefaultFields) == 0 {
 		return payload, nil
 	}
 	reader := codec.NewReader(bytes.NewReader(payload), sch)
@@ -1086,6 +1505,25 @@ func (s *server) populateAutoValues(schemaName string, sch *schema.Schema, paylo
 			}
 			current.Str = uuid
 			current.Set = true
+			row.SetByIndex(idx, current)
+		}
+		for _, idx := range nowDefaultFields {
+			current := values[idx]
+			if current.Set {
+				continue
+			}
+			now := time.Now().UTC()
+			switch sch.Fields[idx].ValueKind() {
+			case schema.KindDate:
+				current.Int = temporal.EncodeDate(now)
+				current.Set = true
+			case schema.KindDateTime, schema.KindTimestamp:
+				current.Int = temporal.EncodeInstant(now)
+				current.Set = true
+			case schema.KindTimestampTZ:
+				current.Str = temporal.FormatTimestampTZ(now)
+				current.Set = true
+			}
 			row.SetByIndex(idx, current)
 		}
 		if err := writer.WriteRow(row); err != nil {

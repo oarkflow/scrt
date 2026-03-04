@@ -96,11 +96,44 @@ func (d *Document) Write(w io.Writer) error {
 			if f.AutoIncrement {
 				fmt.Fprintf(w, " serial") // or auto_increment
 			}
+			if f.ReadOnly {
+				fmt.Fprintf(w, " readonly")
+			}
 			if f.PrimaryKey {
 				fmt.Fprintf(w, " pk")
 			}
 			if f.Unique {
 				fmt.Fprintf(w, " unique")
+			}
+			if f.Nullable {
+				fmt.Fprintf(w, " nullable")
+			}
+			if f.Format != "" {
+				fmt.Fprintf(w, " format:%s", f.Format)
+			}
+			if f.Pattern != "" {
+				fmt.Fprintf(w, " pattern:%q", f.Pattern)
+			}
+			if len(f.Enum) > 0 {
+				fmt.Fprintf(w, " enum:%q", strings.Join(f.Enum, "|"))
+			}
+			if f.MinLength != nil {
+				fmt.Fprintf(w, " minlength:%d", *f.MinLength)
+			}
+			if f.MaxLength != nil {
+				fmt.Fprintf(w, " maxlength:%d", *f.MaxLength)
+			}
+			if f.Minimum != nil {
+				fmt.Fprintf(w, " min:%g", *f.Minimum)
+			}
+			if f.Maximum != nil {
+				fmt.Fprintf(w, " max:%g", *f.Maximum)
+			}
+			if f.Description != "" {
+				fmt.Fprintf(w, " description:%q", f.Description)
+			}
+			if f.Example != "" {
+				fmt.Fprintf(w, " example:%q", f.Example)
 			}
 			if f.TargetSchema != "" {
 				// RawType usually contains the Ref, so we might duplicate if we aren't careful.
@@ -141,6 +174,16 @@ func (d *Document) Write(w io.Writer) error {
 			fmt.Fprintf(w, "@index:%s(%s)", idx.Name, strings.Join(idx.Fields, ", "))
 			if idx.Unique {
 				fmt.Fprint(w, " unique")
+			}
+			fmt.Fprintln(w)
+		}
+		for _, rel := range s.Relations {
+			fmt.Fprintf(w, "@relation %s %s.%s", rel.Field, rel.TargetSchema, rel.TargetField)
+			if rel.OnDelete != "" {
+				fmt.Fprintf(w, " onDelete:%s", rel.OnDelete)
+			}
+			if rel.OnUpdate != "" {
+				fmt.Fprintf(w, " onUpdate:%s", rel.OnUpdate)
 			}
 			fmt.Fprintln(w)
 		}

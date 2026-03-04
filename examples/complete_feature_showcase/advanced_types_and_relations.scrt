@@ -1,0 +1,22 @@
+@schema:User
+@field ID uint64 serial pk
+@field Name string
+
+@schema:Address
+@field Street string
+@field City string
+@field Zip string
+
+@schema:Order
+@field ID uint64 serial pk
+@field UserID ref:User:ID onDelete:restrict onUpdate:cascade
+@field Tags []string
+@field Attributes map[string]string
+@field Shipping object:Address
+
+@User
+1, "Alice"
+2, "Bob"
+
+@Order
+1001, 1, "[\"priority\",\"gift\"]", "{\"channel\":\"web\",\"promo\":\"SPRING\"}", "{\"Street\":\"11 Main\",\"City\":\"NYC\",\"Zip\":\"10001\"}"

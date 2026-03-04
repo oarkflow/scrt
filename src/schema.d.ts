@@ -31,20 +31,49 @@ export declare class Field {
     targetSchema: string;
     targetField: string;
     autoIncrement: boolean;
+    primaryKey: boolean;
+    format: string;
+    pattern: string;
+    enumValues: string[];
+    minLength?: number | undefined;
+    maxLength?: number | undefined;
+    minimum?: number | undefined;
+    maximum?: number | undefined;
+    description: string;
+    example: string;
+    isArray: boolean;
+    isMap: boolean;
+    isObject: boolean;
+    arrayElemType: string;
+    mapKeyType: string;
+    mapValueType: string;
+    objectSchema: string;
+    onDelete: string;
+    onUpdate: string;
     attributes: string[];
     defaultValue?: DefaultValue | undefined;
     resolvedKind: FieldKind;
     pendingDefault: string;
-    constructor(name: string, kind: FieldKind, rawType: string, targetSchema?: string, targetField?: string, autoIncrement?: boolean, attributes?: string[], defaultValue?: DefaultValue | undefined);
+    constructor(name: string, kind: FieldKind, rawType: string, targetSchema?: string, targetField?: string, autoIncrement?: boolean, primaryKey?: boolean, format?: string, pattern?: string, enumValues?: string[], minLength?: number | undefined, maxLength?: number | undefined, minimum?: number | undefined, maximum?: number | undefined, description?: string, example?: string, isArray?: boolean, isMap?: boolean, isObject?: boolean, arrayElemType?: string, mapKeyType?: string, mapValueType?: string, objectSchema?: string, onDelete?: string, onUpdate?: string, attributes?: string[], defaultValue?: DefaultValue | undefined);
     valueKind(): FieldKind;
     isReference(): boolean;
+}
+export declare class RelationDef {
+    name: string;
+    field: string;
+    targetSchema: string;
+    targetField: string;
+    onDelete: string;
+    onUpdate: string;
+    constructor(name: string, field: string, targetSchema: string, targetField: string, onDelete?: string, onUpdate?: string);
 }
 export declare class Schema {
     readonly name: string;
     readonly fields: Field[];
+    readonly relations: RelationDef[];
     private fingerprintCache?;
     private fieldIndex?;
-    constructor(name: string, fields: Field[]);
+    constructor(name: string, fields: Field[], relations?: RelationDef[]);
     fingerprint(): bigint;
     fieldIndexByName(name: string): number;
     tryFieldIndex(name: string): number | undefined;

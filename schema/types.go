@@ -3,6 +3,7 @@ package schema
 import (
 	"hash/fnv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -33,9 +34,28 @@ type Field struct {
 	TargetSchema  string
 	TargetField   string
 	AutoIncrement bool
+	ReadOnly      bool
 	PrimaryKey    bool
 	Unique        bool
 	Nullable      bool
+	Format        string
+	Pattern       string
+	Enum          []string
+	MinLength     *int
+	MaxLength     *int
+	Minimum       *float64
+	Maximum       *float64
+	Description   string
+	Example       string
+	IsArray       bool
+	IsMap         bool
+	IsObject      bool
+	ArrayElemType string
+	MapKeyType    string
+	MapValueType  string
+	ObjectSchema  string
+	OnDelete      string
+	OnUpdate      string
 	RawType       string
 	Attributes    []string
 	Default       *DefaultValue
@@ -53,15 +73,25 @@ type Index struct {
 
 // Schema represents a canonical schema definition extracted from the DSL.
 type Schema struct {
-	Name   string
-	Fields []Field
-	Indexes []Index
+	Name      string
+	Fields    []Field
+	Indexes   []Index
+	Relations []Relation
 
 	once        sync.Once
 	fingerprint uint64
 
 	indexOnce  sync.Once
 	fieldIndex map[string]int
+}
+
+type Relation struct {
+	Name         string
+	Field        string
+	TargetSchema string
+	TargetField  string
+	OnDelete     string
+	OnUpdate     string
 }
 
 // Fingerprint deterministically hashes the schema definition for caching.
@@ -86,6 +116,65 @@ func (s *Schema) Fingerprint() uint64 {
 			if f.AutoIncrement {
 				write("+auto")
 			}
+			if f.ReadOnly {
+				write("+readonly")
+			}
+			if f.Nullable {
+				write("+nullable")
+			}
+			if f.Format != "" {
+				write("+format:")
+				write(f.Format)
+			}
+			if f.Pattern != "" {
+				write("+pattern:")
+				write(f.Pattern)
+			}
+			if len(f.Enum) > 0 {
+				write("+enum:")
+				for _, v := range f.Enum {
+					write(v)
+					write("|")
+				}
+			}
+			if f.MinLength != nil {
+				write("+minlen:")
+				write(intToString(*f.MinLength))
+			}
+			if f.MaxLength != nil {
+				write("+maxlen:")
+				write(intToString(*f.MaxLength))
+			}
+			if f.Minimum != nil {
+				write("+min:")
+				write(floatToString(*f.Minimum))
+			}
+			if f.Maximum != nil {
+				write("+max:")
+				write(floatToString(*f.Maximum))
+			}
+			if f.IsArray {
+				write("+array:")
+				write(f.ArrayElemType)
+			}
+			if f.IsMap {
+				write("+map:")
+				write(f.MapKeyType)
+				write("->")
+				write(f.MapValueType)
+			}
+			if f.IsObject {
+				write("+object:")
+				write(f.ObjectSchema)
+			}
+			if f.OnDelete != "" {
+				write("+ondelete:")
+				write(f.OnDelete)
+			}
+			if f.OnUpdate != "" {
+				write("+onupdate:")
+				write(f.OnUpdate)
+			}
 			if len(f.Attributes) > 0 {
 				attrs := append([]string(nil), f.Attributes...)
 				sort.Strings(attrs)
@@ -98,6 +187,20 @@ func (s *Schema) Fingerprint() uint64 {
 				write("=def:")
 				write(f.Default.hashKey())
 			}
+		}
+		for _, rel := range s.Relations {
+			write("|rel:")
+			write(rel.Name)
+			write(":")
+			write(rel.Field)
+			write("->")
+			write(rel.TargetSchema)
+			write(".")
+			write(rel.TargetField)
+			write("/d:")
+			write(rel.OnDelete)
+			write("/u:")
+			write(rel.OnUpdate)
 		}
 		s.fingerprint = h.Sum64()
 	})
@@ -157,6 +260,14 @@ func (f Field) HasAttribute(label string) bool {
 		}
 	}
 	return false
+}
+
+func intToString(v int) string {
+	return strconv.FormatInt(int64(v), 10)
+}
+
+func floatToString(v float64) string {
+	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
 // Argument represents a function or query argument.

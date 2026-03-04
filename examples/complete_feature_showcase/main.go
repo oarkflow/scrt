@@ -1,112 +1,333 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/oarkflow/scrt/schema"
 )
 
 func main() {
-	// ... (Same setup as before)
-	doc := schema.NewDocument()
+	scrtPath := flag.String("scrt", "examples/complete_feature_showcase/all_reference_cases.scrt", "path to SCRT file")
+	flag.Parse()
 
-	// Check if separated files exist
-	if _, err := os.Stat("metadata.scrt"); err == nil {
-		fmt.Println("Found metadata.scrt, loading separated schema...")
-		if err := doc.LoadFile("metadata.scrt"); err != nil {
-			panic(err)
-		}
-		if _, err := os.Stat("data.scrt"); err == nil {
-			fmt.Println("Found data.scrt, loading separated data...")
-			if err := doc.LoadFile("data.scrt"); err != nil {
-				panic(err)
-			}
-		}
-	} else {
-		// Fallback to monolithic file
-		fmt.Println("Loading full_features.scrt...")
-		if err := doc.LoadFile("full_features.scrt"); err != nil {
-			panic(err)
-		}
+	path := resolvePath(*scrtPath)
+	doc, err := schema.ParseFile(path)
+	if err != nil {
+		fail("parse %s: %v", path, err)
+	}
+	if err := doc.ValidateData(); err != nil {
+		fail("validate data: %v", err)
 	}
 
-	fmt.Println("=== SCRT Interpreter Show case ===")
-	// Initialize the interpreter from the schema package
-	vm := schema.NewInterpreter(doc)
+	fmt.Printf("Loaded %s\n", path)
+	printSummary(doc)
 
-	// Calls using the interpreted body!
+	fmt.Println("\nCRUD demo on schema: OrderItem")
 
-	fmt.Println("\n--- 1. Creating User ( Interpreted ) ---")
-	user := vm.ExecuteFunction("CreateUser", "dave_interpreted", "dave@example.com")
-	fmt.Printf("Result: %v\n", user)
+	createRow := map[string]any{
+		"OrderID":    uint64(1001),
+		"ProductSKU": "SKU-BLUE-2",
+		"Quantity":   int64(3),
+		"UnitPrice":  39.50,
+		"Subtotal":   118.50,
+	}
+	created, err := insertRow(doc, "OrderItem", createRow)
+	if err != nil {
+		fail("create: %v", err)
+	}
+	fmt.Printf("CREATE -> %+v\n", created)
 
-	// Test Constraint Violation
-	fmt.Println("\n--- 1b. Creating Duplicate User ( Should Fail ) ---")
-	vm.ExecuteFunction("CreateUser", "dave_interpreted", "dave@example.com")
+	updated, err := updateRow(doc, "OrderItem", "ItemID", created["ItemID"], map[string]any{
+		"Quantity":  int64(4),
+		"Subtotal":  158.00,
+		"UpdatedAt": time.Now().UTC(),
+	})
+	if err != nil {
+		fail("update: %v", err)
+	}
+	fmt.Printf("UPDATE -> %+v\n", updated)
 
-	fmt.Println("\n--- 2. Updating Stock ( Interpreted ) ---")
-	// "UPDATE Product SET StockLevel = pQty WHERE SKU = pSku"
-	// UpdateProductStock(pSku, pQty)
-	vm.ExecuteFunction("UpdateProductStock", "WIDGET-X", 500)
+	found, ok := getRow(doc, "OrderItem", "ItemID", created["ItemID"])
+	if !ok {
+		fail("read: created row not found")
+	}
+	fmt.Printf("READ -> %+v\n", found)
 
-	fmt.Println("\n--- 3. Deleting Order ( Interpreted ) ---")
-	// "DELETE FROM Order WHERE OrderID = oID"
-	vm.ExecuteFunction("DeleteOrder", 100)
+	if err := deleteRow(doc, "OrderItem", "ItemID", created["ItemID"]); err != nil {
+		fail("delete: %v", err)
+	}
+	fmt.Printf("DELETE -> ItemID=%v\n", created["ItemID"])
 
-	fmt.Println("\n--- 4. Calculating Discount ( Interpreted ) ---")
-	// "price * percent / 100.0"
-	// if price > 1000, subtract 20 extra
-	disc := vm.ExecuteFunction("CalculateDiscount", 200.0, 15.0)
-	fmt.Printf("Discount (200, 15%%): %.2f\n", disc)
+	if _, ok := getRow(doc, "OrderItem", "ItemID", created["ItemID"]); ok {
+		fail("delete verify: row still exists")
+	}
+	fmt.Println("DELETE verification passed")
+}
 
-	disc2 := vm.ExecuteFunction("CalculateDiscount", 2000.0, 10.0)
-	fmt.Printf("Discount (2000, 10%%) [Expected 180]: %.2f\n", disc2)
-
-	fmt.Println("\n--- 4. String concat ( Interpreted ) ---")
-	name := vm.ExecuteFunction("FormatFullName", "John", "Wick")
-	fmt.Printf("Name: %v\n", name)
-
-	// Queries
-	fmt.Println("\n--- 5. Queries ( Interpreted ) ---")
-	vm.ExecuteQuery("GetLowStockProducts", map[string]interface{}{"threshold": 600})
-
-	fmt.Println("\n--- 6. New Features (Loop & Builtins) ---")
-	sum := vm.ExecuteFunction("TestLoop", 5)
-	fmt.Printf("Loop Sum (1..5): %v\n", sum) // Expected 15
-
-	strRes := vm.ExecuteFunction("StringTest", "hello")
-	fmt.Printf("StringTest('hello'): %v\n", strRes) // Expected HELLO_5
-
-	// Verification
-	fmt.Println("\n--- Data Verification ---")
-	fmt.Printf("Product WIDGET-X Stock: %v\n", findOne(doc, "Product", "SKU", "WIDGET-X")["StockLevel"])
-	fmt.Printf("Order 100 exists: %v\n", findOne(doc, "Order", "OrderID", uint64(100)) != nil)
-
-	// Save
-	fmt.Println("\n--- Saving Data ---")
-	// If we loaded separated files, we should probably save them separated too.
-	// But simply saving data.scrt if it exists is a good basic behavior.
-	if _, err := os.Stat("data.scrt"); err == nil {
-		if err := doc.SaveData("data.scrt"); err != nil {
-			fmt.Printf("Error saving data.scrt: %v\n", err)
-		} else {
-			fmt.Println("Saved updates to data.scrt")
+func printSummary(doc *schema.Document) {
+	names := make([]string, 0, len(doc.Schemas))
+	for name := range doc.Schemas {
+		names = append(names, name)
+	}
+	sortStrings(names)
+	for _, name := range names {
+		sch := doc.Schemas[name]
+		fmt.Printf("\n[%s]\n", sch.Name)
+		for _, f := range sch.Fields {
+			parts := []string{f.RawType}
+			if f.PrimaryKey {
+				parts = append(parts, "pk")
+			}
+			if f.AutoIncrement {
+				parts = append(parts, "serial")
+			}
+			if f.ReadOnly {
+				parts = append(parts, "readonly")
+			}
+			if f.Default != nil {
+				parts = append(parts, "default:"+formatDefaultValue(f.Default))
+			}
+			if f.IsArray {
+				parts = append(parts, "array")
+			}
+			if f.IsMap {
+				parts = append(parts, "map")
+			}
+			if f.IsObject {
+				parts = append(parts, "object")
+			}
+			fmt.Printf("  - %s (%s)\n", f.Name, strings.Join(parts, ", "))
 		}
-	} else {
-		if err := doc.Save("full_features.scrt"); err != nil {
-			fmt.Printf("Error saving: %v\n", err)
-		} else {
-			fmt.Println("Saved to full_features.scrt")
+		for _, idx := range sch.Indexes {
+			kind := "index"
+			if idx.Unique {
+				kind = "unique"
+			}
+			fmt.Printf("  - %s %s(%s)\n", kind, idx.Name, strings.Join(idx.Fields, ", "))
+		}
+		for _, rel := range sch.Relations {
+			fmt.Printf("  - relation %s -> %s.%s onDelete=%s onUpdate=%s\n", rel.Field, rel.TargetSchema, rel.TargetField, rel.OnDelete, rel.OnUpdate)
 		}
 	}
 }
 
-func findOne(doc *schema.Document, schemaName, field string, val interface{}) map[string]interface{} {
-	for _, row := range doc.Data[schemaName] {
-		if fmt.Sprintf("%v", row[field]) == fmt.Sprintf("%v", val) {
-			return row
+func insertRow(doc *schema.Document, schemaName string, row map[string]any) (map[string]any, error) {
+	sch, ok := doc.Schema(schemaName)
+	if !ok {
+		return nil, fmt.Errorf("schema %s not found", schemaName)
+	}
+	candidate := cloneMap(row)
+	applyAutoValues(candidate, sch, doc.Data[schemaName])
+	if err := sch.ValidateRow(candidate); err != nil {
+		return nil, err
+	}
+	if err := ensureUniqueIndexes(sch, doc.Data[schemaName], candidate, -1); err != nil {
+		return nil, err
+	}
+	doc.Data[schemaName] = append(doc.Data[schemaName], candidate)
+	return candidate, nil
+}
+
+func getRow(doc *schema.Document, schemaName, keyField string, key any) (map[string]any, bool) {
+	rows := doc.Data[schemaName]
+	for _, row := range rows {
+		if equal(row[keyField], key) {
+			return cloneMap(row), true
+		}
+	}
+	return nil, false
+}
+
+func updateRow(doc *schema.Document, schemaName, keyField string, key any, patch map[string]any) (map[string]any, error) {
+	sch, ok := doc.Schema(schemaName)
+	if !ok {
+		return nil, fmt.Errorf("schema %s not found", schemaName)
+	}
+	rows := doc.Data[schemaName]
+	for i := range rows {
+		if !equal(rows[i][keyField], key) {
+			continue
+		}
+		next := cloneMap(rows[i])
+		for k, v := range patch {
+			next[k] = v
+		}
+		if err := ensureReadOnlyUnchanged(sch, rows[i], next); err != nil {
+			return nil, err
+		}
+		if err := sch.ValidateRow(next); err != nil {
+			return nil, err
+		}
+		if err := ensureUniqueIndexes(sch, rows, next, i); err != nil {
+			return nil, err
+		}
+		rows[i] = next
+		doc.Data[schemaName] = rows
+		return cloneMap(next), nil
+	}
+	return nil, fmt.Errorf("row not found for %s=%v", keyField, key)
+}
+
+func deleteRow(doc *schema.Document, schemaName, keyField string, key any) error {
+	rows := doc.Data[schemaName]
+	for i := range rows {
+		if equal(rows[i][keyField], key) {
+			doc.Data[schemaName] = append(rows[:i], rows[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("row not found for %s=%v", keyField, key)
+}
+
+func ensureReadOnlyUnchanged(sch *schema.Schema, before, after map[string]any) error {
+	for _, field := range sch.Fields {
+		if field.ReadOnly && !equal(before[field.Name], after[field.Name]) {
+			return fmt.Errorf("field %s is readonly", field.Name)
 		}
 	}
 	return nil
+}
+
+func ensureUniqueIndexes(sch *schema.Schema, rows []map[string]any, candidate map[string]any, ignoreIdx int) error {
+	for _, idx := range sch.Indexes {
+		if !idx.Unique || len(idx.Fields) == 0 {
+			continue
+		}
+		for rowIdx, row := range rows {
+			if rowIdx == ignoreIdx {
+				continue
+			}
+			if sameOnFields(row, candidate, idx.Fields) {
+				return fmt.Errorf("unique index %s conflict on fields (%s)", idx.Name, strings.Join(idx.Fields, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+func applyAutoValues(row map[string]any, sch *schema.Schema, existing []map[string]any) {
+	now := time.Now().UTC()
+	for _, f := range sch.Fields {
+		if _, ok := row[f.Name]; ok {
+			continue
+		}
+		if f.AutoIncrement {
+			row[f.Name] = nextUint64(existing, f.Name)
+			continue
+		}
+		if f.Default == nil || !strings.EqualFold(strings.TrimSpace(f.Default.Expression), "now()") {
+			continue
+		}
+		switch f.ValueKind() {
+		case schema.KindDate:
+			row[f.Name] = now.Truncate(24 * time.Hour)
+		case schema.KindDateTime, schema.KindTimestamp, schema.KindTimestampTZ:
+			row[f.Name] = now
+		}
+	}
+}
+
+func nextUint64(rows []map[string]any, field string) uint64 {
+	var max uint64
+	for _, row := range rows {
+		switch v := row[field].(type) {
+		case uint64:
+			if v > max {
+				max = v
+			}
+		case int64:
+			if v > 0 && uint64(v) > max {
+				max = uint64(v)
+			}
+		case int:
+			if v > 0 && uint64(v) > max {
+				max = uint64(v)
+			}
+		}
+	}
+	return max + 1
+}
+
+func sameOnFields(a, b map[string]any, fields []string) bool {
+	for _, field := range fields {
+		if !equal(a[field], b[field]) {
+			return false
+		}
+	}
+	return true
+}
+
+func equal(a, b any) bool {
+	return fmt.Sprint(a) == fmt.Sprint(b)
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func sortStrings(values []string) {
+	if len(values) < 2 {
+		return
+	}
+	for i := 0; i < len(values)-1; i++ {
+		for j := i + 1; j < len(values); j++ {
+			if values[j] < values[i] {
+				values[i], values[j] = values[j], values[i]
+			}
+		}
+	}
+}
+
+func resolvePath(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	base := filepath.Base(path)
+	if _, err := os.Stat(base); err == nil {
+		return base
+	}
+	return path
+}
+
+func formatDefaultValue(d *schema.DefaultValue) string {
+	if d == nil {
+		return ""
+	}
+	if strings.TrimSpace(d.Expression) != "" {
+		return d.Expression
+	}
+	switch d.Kind {
+	case schema.KindBool:
+		return fmt.Sprint(d.Bool)
+	case schema.KindInt64:
+		return fmt.Sprint(d.Int)
+	case schema.KindUint64, schema.KindRef:
+		return fmt.Sprint(d.Uint)
+	case schema.KindFloat64:
+		return fmt.Sprint(d.Float)
+	case schema.KindString:
+		return d.String
+	case schema.KindBytes:
+		return string(d.Bytes)
+	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp, schema.KindDuration:
+		return fmt.Sprint(d.Int)
+	case schema.KindTimestampTZ:
+		return d.String
+	default:
+		return ""
+	}
+}
+
+func fail(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
+	os.Exit(1)
 }

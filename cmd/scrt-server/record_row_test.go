@@ -76,18 +76,71 @@ func TestHandleRecordRowPatch(t *testing.T) {
 	if envelope.Row["Name"] != "Jenny" {
 		t.Fatalf("expected Name=Jenny, got %v", envelope.Row["Name"])
 	}
-	reloaded, err := backend.LoadPayload("User")
+	getReq := httptest.NewRequest(http.MethodGet, "/records/User/row/ID/1002", nil)
+	getResp := httptest.NewRecorder()
+	srv.handleRecords(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected GET status 200, got %d", getResp.Code)
+	}
+	var fetched struct {
+		Row map[string]interface{} `json:"row"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&fetched); err != nil {
+		t.Fatalf("decode fetched row: %v", err)
+	}
+	if fetched.Row["Name"] != "Jenny" {
+		t.Fatalf("patch did not persist effective row, got %v", fetched.Row["Name"])
+	}
+}
+
+func TestHandleRecordRowPatchReadonlyField(t *testing.T) {
+	t.Parallel()
+	reg := schema.NewDocumentRegistry()
+	const userSchema = `@schema:User
+@field ID uint64 auto_increment readonly
+@field Name string
+@field CreatedAt timestamp default:now() readonly
+`
+	if _, err := reg.Upsert("User", []byte(userSchema), "test", time.Now().UTC()); err != nil {
+		t.Fatalf("upsert schema: %v", err)
+	}
+	backend, err := storage.NewSnapshotBackend(t.TempDir())
 	if err != nil {
-		t.Fatalf("reload payload: %v", err)
+		t.Fatalf("storage backend: %v", err)
 	}
-	var rows []map[string]any
-	if err := scrt.Unmarshal(reloaded, sch, &rows); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
+	srv := &server{registry: reg, store: backend}
+	doc, _, _, err := reg.Snapshot("User")
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
+	sch, ok := doc.Schema("User")
+	if !ok {
+		t.Fatalf("schema User missing")
 	}
-	if rows[1]["Name"] != "Jenny" {
-		t.Fatalf("patch did not persist change, got %v", rows[1]["Name"])
+	seedRows := []map[string]any{
+		{"ID": uint64(1001), "Name": "John", "CreatedAt": time.Now().UTC().Add(-time.Hour)},
+	}
+	payload, err := scrt.Marshal(sch, seedRows)
+	if err != nil {
+		t.Fatalf("marshal seed rows: %v", err)
+	}
+	if _, err := backend.Persist("User", sch, payload, storage.PersistOptions{Indexes: storage.AutoIndexSpecs(sch)}); err != nil {
+		t.Fatalf("persist seed rows: %v", err)
+	}
+	if err := reg.SetPayload("User", payload); err != nil {
+		t.Fatalf("set payload: %v", err)
+	}
+	replacement, err := scrt.Marshal(sch, []map[string]any{
+		{"ID": uint64(1001), "Name": "Johnny", "CreatedAt": time.Now().UTC()},
+	})
+	if err != nil {
+		t.Fatalf("marshal replacement: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/records/User/row/ID/1001", bytes.NewReader(replacement))
+	req.Header.Set("Content-Type", "application/x-scrt")
+	resp := httptest.NewRecorder()
+	srv.handleRecords(resp, req)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }

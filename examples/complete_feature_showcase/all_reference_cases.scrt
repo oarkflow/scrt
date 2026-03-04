@@ -1,0 +1,64 @@
+@schema:User
+@field ID uint64 serial pk readonly
+@field Name string minlength:2 maxlength:80
+@field Email string format:email
+@field MiddleName ?string
+@field Status string enum:"Active|Inactive|Blocked" default:"Active"
+@field CreatedAt timestamp default:now() readonly
+@field UpdatedAt timestamp default:now()
+@unique(Name, Email)
+@index:idx_user_status_created(Status, CreatedAt)
+
+@schema:Product
+@field SKU string pk readonly
+@field Name string minlength:2 maxlength:120
+@field Price float64 min:0
+@field Metadata map[string]string
+@field Tags []string
+@field CreatedAt timestamp default:now() readonly
+@index:idx_product_price_name(Price, Name)
+
+@schema:Address
+@field Street string
+@field City string
+@field PostalCode string
+@field Country string
+
+@schema:Order
+@field OrderID uint64 serial pk readonly
+@field CustomerID ref:User:ID onDelete:cascade onUpdate:restrict
+@field CreatedAt timestamp default:now() readonly
+@field UpdatedAt timestamp default:now()
+@field Notes ?string
+@field ShippingAddress object:Address
+@field Attributes map[string]string
+@field Labels []string
+@index:idx_order_customer_created(CustomerID, CreatedAt)
+
+@schema:OrderItem
+@field ItemID uint64 serial pk readonly
+@field OrderID ref:Order:OrderID onDelete:cascade onUpdate:restrict
+@field ProductSKU ref:Product:SKU onDelete:restrict onUpdate:cascade
+@field Quantity int min:1 max:1000
+@field UnitPrice float64 min:0
+@field Subtotal float64 min:0
+@field CreatedAt timestamp default:now() readonly
+@field UpdatedAt timestamp default:now()
+@index:idx_orderitem_order_product(OrderID, ProductSKU)
+@unique(OrderID, ProductSKU)
+
+@User
+1, "Alice", "alice@example.com", null, "Active", 2026-03-04 09:00:00, 2026-03-04 09:00:00
+2, "Bob", "bob@example.com", null, "Inactive", 2026-03-04 09:05:00, 2026-03-04 09:05:00
+
+@Product
+"SKU-RED-1", "Red Shirt", 29.99, "{\"material\":\"cotton\",\"size\":\"M\"}", "[\"apparel\",\"red\"]", 2026-03-04 09:10:00
+"SKU-BLUE-2", "Blue Shirt", 39.50, "{\"material\":\"linen\",\"size\":\"L\"}", "[\"apparel\",\"blue\"]", 2026-03-04 09:12:00
+
+@Order
+1001, 1, 2026-03-04 10:30:00, 2026-03-04 10:30:00, "Gift wrap this order", "{\"Street\":\"11 Main\",\"City\":\"NYC\",\"PostalCode\":\"10001\",\"Country\":\"US\"}", "{\"channel\":\"web\",\"promo\":\"SPRING\"}", "[\"priority\",\"gift\"]"
+1002, 2, 2026-03-04 11:15:00, 2026-03-04 11:15:00, null, "{\"Street\":\"77 Lake\",\"City\":\"Boston\",\"PostalCode\":\"02110\",\"Country\":\"US\"}", "{\"channel\":\"store\"}", "[\"standard\"]"
+
+@OrderItem
+5001, 1001, "SKU-RED-1", 2, 29.99, 59.98, 2026-03-04 10:31:00, 2026-03-04 10:31:00
+5002, 1002, "SKU-BLUE-2", 1, 39.50, 39.50, 2026-03-04 11:16:00, 2026-03-04 11:16:00

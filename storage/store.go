@@ -26,6 +26,8 @@ type SnapshotStore struct {
 	mu           sync.RWMutex
 	rowIndexes   map[string]*RowIndex
 	colIndexes   map[string]map[string]*ColumnIndex
+	fullText     map[string]*FullTextIndex
+	mutations    map[string]*MutationLog
 	autoCounters map[string]map[string]uint64
 }
 
@@ -43,6 +45,7 @@ type SnapshotMeta struct {
 	PayloadPath  string            `json:"payloadPath"`
 	RowIndex     string            `json:"rowIndex"`
 	Indexes      []IndexDescriptor `json:"indexes"`
+	FullTextPath string            `json:"fullTextPath,omitempty"`
 	AutoCounters map[string]uint64 `json:"autoCounters,omitempty"`
 }
 
@@ -85,6 +88,8 @@ func NewSnapshotStore(root string) (*SnapshotStore, error) {
 		root:         root,
 		rowIndexes:   make(map[string]*RowIndex),
 		colIndexes:   make(map[string]map[string]*ColumnIndex),
+		fullText:     make(map[string]*FullTextIndex),
+		mutations:    make(map[string]*MutationLog),
 		autoCounters: make(map[string]map[string]uint64),
 	}, nil
 }
@@ -143,6 +148,14 @@ func (s *SnapshotStore) Persist(schemaName string, sch *schema.Schema, payload [
 			return idxMeta[i].Field < idxMeta[j].Field
 		})
 	}
+	fullText, err := BuildFullTextIndex(sch, payload)
+	if err != nil {
+		return nil, err
+	}
+	fullTextPath := filepath.Join(schemaDir, "fulltext.json")
+	if err := writeFullTextIndexFile(fullTextPath, fullText); err != nil {
+		return nil, err
+	}
 	autoCounters := computeAutoCounters(sch, columnIndexes, rowIndex)
 	meta := &SnapshotMeta{
 		SchemaName:   schemaName,
@@ -152,15 +165,21 @@ func (s *SnapshotStore) Persist(schemaName string, sch *schema.Schema, payload [
 		PayloadPath:  "payload.scrt",
 		RowIndex:     "row.idx",
 		Indexes:      idxMeta,
+		FullTextPath: "fulltext.json",
 		AutoCounters: autoCounters,
 	}
 	if err := writeMetaFile(filepath.Join(schemaDir, "meta.json"), meta); err != nil {
+		return nil, err
+	}
+	if err := clearMutationLogFile(s.mutationPath(schemaName)); err != nil {
 		return nil, err
 	}
 	if err := s.saveCounters(schemaName, autoCounters); err != nil {
 		return nil, err
 	}
 	s.cacheRowIndex(schemaName, rowIndex)
+	s.cacheFullText(schemaName, fullText)
+	s.cacheMutations(schemaName, NewMutationLog())
 	s.cacheAutoCounters(schemaName, autoCounters)
 	return meta, nil
 }
@@ -206,6 +225,10 @@ func (s *SnapshotStore) ListMeta() ([]*SnapshotMeta, error) {
 
 // LookupRow decodes the row identified by rowID into dst.
 func (s *SnapshotStore) LookupRow(schemaName string, sch *schema.Schema, rowID uint64, dst codec.Row) error {
+	return s.lookupRowFromBase(schemaName, sch, rowID, dst)
+}
+
+func (s *SnapshotStore) lookupRowFromBase(schemaName string, sch *schema.Schema, rowID uint64, dst codec.Row) error {
 	rowIndex, err := s.rowIndex(schemaName)
 	if err != nil {
 		return err
@@ -235,8 +258,10 @@ func (s *SnapshotStore) LookupByUint(schemaName string, sch *schema.Schema, fiel
 	if !ok {
 		return false, nil
 	}
-	if err := s.LookupRow(schemaName, sch, rowID, dst); err != nil {
+	if found, err := s.LookupRowEffective(schemaName, sch, rowID, dst); err != nil {
 		return false, err
+	} else if !found {
+		return false, nil
 	}
 	return true, nil
 }
@@ -254,8 +279,10 @@ func (s *SnapshotStore) LookupByString(schemaName string, sch *schema.Schema, fi
 	if !ok {
 		return false, nil
 	}
-	if err := s.LookupRow(schemaName, sch, rowID, dst); err != nil {
+	if found, err := s.LookupRowEffective(schemaName, sch, rowID, dst); err != nil {
 		return false, err
+	} else if !found {
+		return false, nil
 	}
 	return true, nil
 }
@@ -330,6 +357,8 @@ func (s *SnapshotStore) Delete(schemaName string) error {
 	s.mu.Lock()
 	delete(s.rowIndexes, schemaName)
 	delete(s.colIndexes, schemaName)
+	delete(s.fullText, schemaName)
+	delete(s.mutations, schemaName)
 	delete(s.autoCounters, schemaName)
 	s.mu.Unlock()
 	return os.RemoveAll(filepath.Join(s.root, schemaName))
@@ -390,6 +419,22 @@ func (s *SnapshotStore) cacheAutoCounters(schemaName string, counters map[string
 			clone[key] = val
 		}
 		s.autoCounters[schemaName] = clone
+	}
+	s.mu.Unlock()
+}
+
+func (s *SnapshotStore) cacheFullText(schemaName string, idx *FullTextIndex) {
+	s.mu.Lock()
+	s.fullText[schemaName] = idx
+	s.mu.Unlock()
+}
+
+func (s *SnapshotStore) cacheMutations(schemaName string, log *MutationLog) {
+	s.mu.Lock()
+	if log == nil {
+		delete(s.mutations, schemaName)
+	} else {
+		s.mutations[schemaName] = log
 	}
 	s.mu.Unlock()
 }
@@ -471,7 +516,7 @@ func computeAutoCounters(sch *schema.Schema, indexes map[string]*ColumnIndex, ro
 }
 
 func (s *SnapshotStore) saveCounters(schemaName string, counters map[string]uint64) error {
-	if counters == nil || len(counters) == 0 {
+	if len(counters) == 0 {
 		if err := os.Remove(s.countersPath(schemaName)); err != nil && !os.IsNotExist(err) {
 			return err
 		}

@@ -2,10 +2,13 @@ package schema
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oarkflow/scrt/temporal"
 )
@@ -162,6 +165,28 @@ func (doc *Document) Load(r io.Reader) error {
 				return err
 			}
 			current.Indexes = append(current.Indexes, idx)
+		case strings.HasPrefix(line, "@unique"):
+			fieldBlock = false
+			currentDataSchema = ""
+			if current == nil {
+				return errors.New("@unique outside of schema")
+			}
+			idx, err := parseUnique(strings.TrimSpace(strings.TrimPrefix(line, "@unique")))
+			if err != nil {
+				return err
+			}
+			current.Indexes = append(current.Indexes, idx)
+		case strings.HasPrefix(line, "@relation"):
+			fieldBlock = false
+			currentDataSchema = ""
+			if current == nil {
+				return errors.New("@relation outside of schema")
+			}
+			rel, err := parseRelation(strings.TrimSpace(strings.TrimPrefix(line, "@relation")))
+			if err != nil {
+				return err
+			}
+			current.Relations = append(current.Relations, rel)
 
 		case strings.HasPrefix(strings.ToLower(line), "fields"):
 			if current == nil {
@@ -268,41 +293,50 @@ func parseField(body string) (Field, error) {
 		field.Nullable = true
 		typ = typ[1:]
 	}
-
-	lower := strings.ToLower(typ)
-	switch {
-	case lower == "uint64" || lower == "uint":
-		field.Kind = KindUint64
-	case lower == "string" || lower == "str" || lower == "text":
-		field.Kind = KindString
-	case lower == "bool" || lower == "boolean":
-		field.Kind = KindBool
-	case lower == "int64" || lower == "int" || lower == "integer":
-		field.Kind = KindInt64
-	case lower == "float64" || lower == "float" || lower == "double":
-		field.Kind = KindFloat64
-	case lower == "bytes" || lower == "blob":
-		field.Kind = KindBytes
-	case lower == "date":
-		field.Kind = KindDate
-	case lower == "datetime":
-		field.Kind = KindDateTime
-	case lower == "timestamp":
-		field.Kind = KindTimestamp
-	case lower == "timestamptz":
-		field.Kind = KindTimestampTZ
-	case lower == "duration":
-		field.Kind = KindDuration
-	case strings.HasPrefix(lower, "ref:"):
-		field.Kind = KindRef
-		parts := strings.Split(typ, ":")
-		if len(parts) != 3 {
-			return Field{}, fmt.Errorf("invalid ref declaration: %q", typ)
+	if !parseComplexType(&field, typ) {
+		lower := strings.ToLower(typ)
+		switch {
+		case lower == "uint64" || lower == "uint":
+			field.Kind = KindUint64
+		case lower == "string" || lower == "str" || lower == "text":
+			field.Kind = KindString
+		case lower == "bool" || lower == "boolean":
+			field.Kind = KindBool
+		case lower == "int64" || lower == "int" || lower == "integer":
+			field.Kind = KindInt64
+		case lower == "float64" || lower == "float" || lower == "double":
+			field.Kind = KindFloat64
+		case lower == "bytes" || lower == "blob":
+			field.Kind = KindBytes
+		case lower == "date":
+			field.Kind = KindDate
+		case lower == "datetime":
+			field.Kind = KindDateTime
+		case lower == "timestamp":
+			field.Kind = KindTimestamp
+		case lower == "timestamptz":
+			field.Kind = KindTimestampTZ
+		case lower == "duration":
+			field.Kind = KindDuration
+		case strings.HasPrefix(lower, "ref:"):
+			field.Kind = KindRef
+			parts := strings.Split(typ, ":")
+			if len(parts) != 3 {
+				return Field{}, fmt.Errorf("invalid ref declaration: %q", typ)
+			}
+			field.TargetSchema = parts[1]
+			field.TargetField = parts[2]
+		default:
+			// Treat non-primitive identifiers as schema type shorthand.
+			// Example: `@field Customer User` resolves like `ref:User:<pk|ID>`.
+			if isIdentifier(typ) {
+				field.Kind = KindRef
+				field.TargetSchema = typ
+				field.TargetField = ""
+				break
+			}
+			return Field{}, fmt.Errorf("unsupported field type %q", typ)
 		}
-		field.TargetSchema = parts[1]
-		field.TargetField = parts[2]
-	default:
-		return Field{}, fmt.Errorf("unsupported field type %q", typ)
 	}
 
 	if attrChunk != "" {
@@ -316,6 +350,8 @@ func parseField(body string) (Field, error) {
 			switch {
 			case lower == "auto_increment" || lower == "autoincrement" || lower == "serial":
 				field.AutoIncrement = true
+			case lower == "readonly" || lower == "read_only" || lower == "immutable":
+				field.ReadOnly = true
 			case lower == "primary_key" || lower == "pk" || lower == "primary":
 				field.PrimaryKey = true
 			case lower == "unique":
@@ -332,6 +368,48 @@ func parseField(body string) (Field, error) {
 				if err := assignFieldDefault(&field, val); err != nil {
 					return Field{}, err
 				}
+			case hasAttrPrefix(lower, "format"):
+				field.Format = strings.ToLower(unquoteAttrValue(extractAttrValue(attr)))
+			case hasAttrPrefix(lower, "pattern"):
+				field.Pattern = unquoteAttrValue(extractAttrValue(attr))
+			case hasAttrPrefix(lower, "enum"):
+				values := parseEnumValues(extractAttrValue(attr))
+				if len(values) == 0 {
+					return Field{}, fmt.Errorf("empty enum values for field %s", field.Name)
+				}
+				field.Enum = values
+			case hasAttrPrefix(lower, "minlength") || hasAttrPrefix(lower, "min_len"):
+				n, err := strconv.Atoi(strings.TrimSpace(extractAttrValue(attr)))
+				if err != nil {
+					return Field{}, fmt.Errorf("invalid minlength for field %s: %w", field.Name, err)
+				}
+				field.MinLength = &n
+			case hasAttrPrefix(lower, "maxlength") || hasAttrPrefix(lower, "max_len"):
+				n, err := strconv.Atoi(strings.TrimSpace(extractAttrValue(attr)))
+				if err != nil {
+					return Field{}, fmt.Errorf("invalid maxlength for field %s: %w", field.Name, err)
+				}
+				field.MaxLength = &n
+			case hasAttrPrefix(lower, "min"):
+				v, err := strconv.ParseFloat(strings.TrimSpace(extractAttrValue(attr)), 64)
+				if err != nil {
+					return Field{}, fmt.Errorf("invalid minimum for field %s: %w", field.Name, err)
+				}
+				field.Minimum = &v
+			case hasAttrPrefix(lower, "max"):
+				v, err := strconv.ParseFloat(strings.TrimSpace(extractAttrValue(attr)), 64)
+				if err != nil {
+					return Field{}, fmt.Errorf("invalid maximum for field %s: %w", field.Name, err)
+				}
+				field.Maximum = &v
+			case hasAttrPrefix(lower, "description"), hasAttrPrefix(lower, "desc"):
+				field.Description = unquoteAttrValue(extractAttrValue(attr))
+			case hasAttrPrefix(lower, "example"):
+				field.Example = unquoteAttrValue(extractAttrValue(attr))
+			case hasAttrPrefix(lower, "ondelete"):
+				field.OnDelete = strings.ToLower(unquoteAttrValue(extractAttrValue(attr)))
+			case hasAttrPrefix(lower, "onupdate"):
+				field.OnUpdate = strings.ToLower(unquoteAttrValue(extractAttrValue(attr)))
 			default:
 				// keep normalized attribute for hashing/reference
 			}
@@ -386,6 +464,132 @@ func parseIndex(body string) (Index, error) {
 	}
 
 	return idx, nil
+}
+
+func parseUnique(body string) (Index, error) {
+	body = strings.TrimSpace(body)
+	if strings.HasPrefix(body, ":") {
+		body = strings.TrimSpace(body[1:])
+	}
+	openParen := strings.Index(body, "(")
+	closeParen := strings.LastIndex(body, ")")
+	if openParen == -1 || closeParen == -1 || closeParen < openParen {
+		return Index{}, fmt.Errorf("invalid unique definition: %q", body)
+	}
+	fieldsStr := body[openParen+1 : closeParen]
+	rawFields := strings.Split(fieldsStr, ",")
+	fields := make([]string, 0, len(rawFields))
+	for _, f := range rawFields {
+		trimmed := strings.TrimSpace(f)
+		if trimmed != "" {
+			fields = append(fields, trimmed)
+		}
+	}
+	if len(fields) == 0 {
+		return Index{}, fmt.Errorf("invalid unique definition with no fields: %q", body)
+	}
+	name := "uniq_" + strings.ToLower(strings.Join(fields, "_"))
+	return Index{Name: name, Fields: fields, Unique: true}, nil
+}
+
+func parseRelation(body string) (Relation, error) {
+	body = strings.TrimSpace(body)
+	if strings.HasPrefix(body, ":") {
+		body = strings.TrimSpace(body[1:])
+	}
+	if body == "" {
+		return Relation{}, fmt.Errorf("invalid relation declaration: empty")
+	}
+	parts := strings.Fields(body)
+	if len(parts) < 2 {
+		return Relation{}, fmt.Errorf("invalid relation declaration: %q", body)
+	}
+	rel := Relation{
+		Name:     parts[0],
+		Field:    parts[0],
+		OnDelete: "restrict",
+		OnUpdate: "restrict",
+	}
+	targetToken := parts[1]
+	if strings.Contains(targetToken, "->") {
+		chunks := strings.SplitN(targetToken, "->", 2)
+		if strings.TrimSpace(chunks[0]) != "" {
+			rel.Field = strings.TrimSpace(chunks[0])
+		}
+		targetToken = strings.TrimSpace(chunks[1])
+	}
+	if strings.Contains(targetToken, ".") {
+		chunks := strings.SplitN(targetToken, ".", 2)
+		rel.TargetSchema = strings.TrimSpace(chunks[0])
+		rel.TargetField = strings.TrimSpace(chunks[1])
+	} else if strings.Contains(targetToken, ":") {
+		chunks := strings.SplitN(targetToken, ":", 2)
+		rel.TargetSchema = strings.TrimSpace(chunks[0])
+		rel.TargetField = strings.TrimSpace(chunks[1])
+	} else {
+		return Relation{}, fmt.Errorf("invalid relation target %q", targetToken)
+	}
+	for _, token := range parts[2:] {
+		lower := strings.ToLower(strings.TrimSpace(token))
+		switch {
+		case hasAttrPrefix(lower, "ondelete"):
+			rel.OnDelete = strings.ToLower(unquoteAttrValue(extractAttrValue(token)))
+		case hasAttrPrefix(lower, "onupdate"):
+			rel.OnUpdate = strings.ToLower(unquoteAttrValue(extractAttrValue(token)))
+		}
+	}
+	if rel.TargetSchema == "" || rel.TargetField == "" {
+		return Relation{}, fmt.Errorf("invalid relation declaration: %q", body)
+	}
+	return rel, nil
+}
+
+func parseComplexType(field *Field, typ string) bool {
+	if field == nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(typ)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "[]") {
+		elem := strings.TrimSpace(trimmed[2:])
+		if elem == "" {
+			return false
+		}
+		field.IsArray = true
+		field.ArrayElemType = elem
+		field.Kind = KindString
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "map[") {
+		open := strings.Index(trimmed, "[")
+		close := strings.Index(trimmed, "]")
+		if open == -1 || close == -1 || close <= open+1 || close >= len(trimmed)-1 {
+			return false
+		}
+		key := strings.TrimSpace(trimmed[open+1 : close])
+		value := strings.TrimSpace(trimmed[close+1:])
+		if key == "" || value == "" {
+			return false
+		}
+		field.IsMap = true
+		field.MapKeyType = key
+		field.MapValueType = value
+		field.Kind = KindString
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "object:") {
+		name := strings.TrimSpace(trimmed[len("object:"):])
+		if name == "" {
+			return false
+		}
+		field.IsObject = true
+		field.ObjectSchema = name
+		field.Kind = KindString
+		return true
+	}
+	return false
 }
 
 func splitFieldParts(body string) (string, string, string, error) {
@@ -444,6 +648,27 @@ func splitFieldAttributes(input string) []string {
 	return attrs
 }
 
+func isIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		switch {
+		case r == '_':
+			continue
+		case r >= 'a' && r <= 'z':
+			continue
+		case r >= 'A' && r <= 'Z':
+			continue
+		case i > 0 && r >= '0' && r <= '9':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func assignFieldDefault(field *Field, literal string) error {
 	if field == nil {
 		return errors.New("nil field for default assignment")
@@ -458,6 +683,49 @@ func assignFieldDefault(field *Field, literal string) error {
 	}
 	field.Default = parsed
 	return nil
+}
+
+func hasAttrPrefix(lowerAttr, key string) bool {
+	return strings.HasPrefix(lowerAttr, key+"=") || strings.HasPrefix(lowerAttr, key+":")
+}
+
+func extractAttrValue(attr string) string {
+	if idx := strings.Index(attr, "="); idx >= 0 {
+		return strings.TrimSpace(attr[idx+1:])
+	}
+	if idx := strings.Index(attr, ":"); idx >= 0 {
+		return strings.TrimSpace(attr[idx+1:])
+	}
+	return ""
+}
+
+func unquoteAttrValue(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) >= 2 {
+		first := trimmed[0]
+		last := trimmed[len(trimmed)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`') {
+			return trimmed[1 : len(trimmed)-1]
+		}
+	}
+	return trimmed
+}
+
+func parseEnumValues(raw string) []string {
+	literal := unquoteAttrValue(raw)
+	if literal == "" {
+		return nil
+	}
+	parts := strings.Split(literal, "|")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func parseDataRow(line string, sch *Schema) (map[string]interface{}, error) {
@@ -510,8 +778,30 @@ func parseDataRow(line string, sch *Schema) (map[string]interface{}, error) {
 		fieldIdx++
 		valueTokensRemaining--
 	}
+	applyNowDefaults(row, sch)
 
 	return row, nil
+}
+
+func applyNowDefaults(row map[string]interface{}, sch *Schema) {
+	if sch == nil || row == nil {
+		return
+	}
+	for _, field := range sch.Fields {
+		if _, exists := row[field.Name]; exists {
+			continue
+		}
+		if field.Default == nil || !strings.EqualFold(strings.TrimSpace(field.Default.Expression), "now()") {
+			continue
+		}
+		now := time.Now().UTC()
+		switch field.ValueKind() {
+		case KindDate:
+			row[field.Name] = now.Truncate(24 * time.Hour)
+		case KindDateTime, KindTimestamp, KindTimestampTZ:
+			row[field.Name] = now
+		}
+	}
 }
 
 func countValueTokens(fields []string) int {
@@ -660,6 +950,21 @@ func parseValue(raw string, field *Field) (interface{}, error) {
 		return nil, fmt.Errorf("invalid bool: %q", raw)
 
 	case KindString:
+		if field.IsArray || field.IsMap || field.IsObject {
+			jsonRaw := raw
+			if len(jsonRaw) >= 2 && (jsonRaw[0] == '"' || jsonRaw[0] == '\'') && jsonRaw[len(jsonRaw)-1] == jsonRaw[0] {
+				if unquoted, err := strconv.Unquote(jsonRaw); err == nil {
+					jsonRaw = unquoted
+				} else {
+					jsonRaw = jsonRaw[1 : len(jsonRaw)-1]
+				}
+			}
+			var out interface{}
+			if err := json.Unmarshal([]byte(jsonRaw), &out); err != nil {
+				return nil, fmt.Errorf("invalid JSON value for complex field %s: %w", field.Name, err)
+			}
+			return out, nil
+		}
 		if len(raw) >= 2 && (raw[0] == '"' || raw[0] == '\'') {
 			unquoted := raw[1 : len(raw)-1]
 			return unquoted, nil

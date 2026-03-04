@@ -69,6 +69,25 @@ export class Field {
 		public targetSchema = "",
 		public targetField = "",
 		public autoIncrement = false,
+		public primaryKey = false,
+		public format = "",
+		public pattern = "",
+		public enumValues: string[] = [],
+		public minLength?: number,
+		public maxLength?: number,
+		public minimum?: number,
+		public maximum?: number,
+		public description = "",
+		public example = "",
+		public isArray = false,
+		public isMap = false,
+		public isObject = false,
+		public arrayElemType = "",
+		public mapKeyType = "",
+		public mapValueType = "",
+		public objectSchema = "",
+		public onDelete = "",
+		public onUpdate = "",
 		public attributes: string[] = [],
 		public defaultValue?: DefaultValue,
 	) { }
@@ -85,11 +104,22 @@ export class Field {
 	}
 }
 
+export class RelationDef {
+	constructor(
+		public name: string,
+		public field: string,
+		public targetSchema: string,
+		public targetField: string,
+		public onDelete: string = "restrict",
+		public onUpdate: string = "restrict",
+	) { }
+}
+
 export class Schema {
 	private fingerprintCache?: bigint;
 	private fieldIndex?: Map<string, number>;
 
-	constructor(public readonly name: string, public readonly fields: Field[]) { }
+	constructor(public readonly name: string, public readonly fields: Field[], public readonly relations: RelationDef[] = []) { }
 
 	fingerprint(): bigint {
 		if (this.fingerprintCache !== undefined) {
@@ -125,6 +155,20 @@ export class Schema {
 				write("=def:");
 				write(field.defaultValue.hashKey());
 			}
+		}
+		for (const rel of this.relations) {
+			write("|rel:");
+			write(rel.name);
+			write(":");
+			write(rel.field);
+			write("->");
+			write(rel.targetSchema);
+			write(".");
+			write(rel.targetField);
+			write("/d:");
+			write(rel.onDelete);
+			write("/u:");
+			write(rel.onUpdate);
 		}
 		this.fingerprintCache = BigInt.asUintN(64, hash);
 		return this.fingerprintCache;
@@ -191,8 +235,9 @@ export class Document {
 	}
 
 	finalize(): void {
-		for (const schema of this.schemas.values()) {
+	for (const schema of this.schemas.values()) {
 			resolveSchemaKinds(this, schema);
+			synthesizeInlineRelations(schema);
 		}
 	}
 
@@ -321,6 +366,16 @@ export class Document {
 				current.fields.push(field);
 				continue;
 			}
+			if (line.startsWith("@relation")) {
+				fieldBlock = false;
+				currentData = "";
+				if (!current) {
+					throw new Error("scrt: @relation outside schema block");
+				}
+				const rel = parseRelation(line.slice("@relation".length).trim());
+				current.relations.push(rel);
+				continue;
+			}
 			if (line.toLowerCase().startsWith("fields")) {
 				if (!current) {
 					throw new Error("scrt: fields block outside schema");
@@ -374,8 +429,18 @@ function pushDataRow(store: Map<string, Record<string, unknown>[]>, schemaName: 
 
 function parseField(body: string): Field {
 	const [name, typ, attrChunk] = splitFieldParts(body);
-	const { kind, targetSchema, targetField } = interpretFieldType(typ);
+	const complexType = parseComplexType(typ);
+	const { kind, targetSchema, targetField } = complexType ?? interpretFieldType(typ);
 	const field = new Field(name, kind, typ, targetSchema, targetField);
+	if (complexType) {
+		field.isArray = !!complexType.isArray;
+		field.isMap = !!complexType.isMap;
+		field.isObject = !!complexType.isObject;
+		field.arrayElemType = complexType.arrayElemType ?? "";
+		field.mapKeyType = complexType.mapKeyType ?? "";
+		field.mapValueType = complexType.mapValueType ?? "";
+		field.objectSchema = complexType.objectSchema ?? "";
+	}
 	if (attrChunk) {
 		const attrs = splitFieldAttributes(attrChunk);
 		for (const attr of attrs) {
@@ -384,9 +449,45 @@ function parseField(body: string): Field {
 				case lower === "auto_increment" || lower === "autoincrement" || lower === "serial":
 					field.autoIncrement = true;
 					break;
+				case lower === "primary_key" || lower === "pk" || lower === "primary":
+					field.primaryKey = true;
+					break;
 				case lower.startsWith("default="):
 				case lower.startsWith("default:"):
 					assignFieldDefault(field, extractDefaultLiteral(attr));
+					break;
+				case hasAttrPrefix(lower, "format"):
+					field.format = unquoteAttrValue(extractAttrValue(attr)).toLowerCase();
+					break;
+				case hasAttrPrefix(lower, "pattern"):
+					field.pattern = unquoteAttrValue(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "enum"):
+					field.enumValues = parseEnumValues(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "minlength") || hasAttrPrefix(lower, "min_len"):
+					field.minLength = Number(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "maxlength") || hasAttrPrefix(lower, "max_len"):
+					field.maxLength = Number(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "min"):
+					field.minimum = Number(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "max"):
+					field.maximum = Number(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "description") || hasAttrPrefix(lower, "desc"):
+					field.description = unquoteAttrValue(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "example"):
+					field.example = unquoteAttrValue(extractAttrValue(attr));
+					break;
+				case hasAttrPrefix(lower, "ondelete"):
+					field.onDelete = unquoteAttrValue(extractAttrValue(attr)).toLowerCase();
+					break;
+				case hasAttrPrefix(lower, "onupdate"):
+					field.onUpdate = unquoteAttrValue(extractAttrValue(attr)).toLowerCase();
 					break;
 				default:
 					break;
@@ -395,6 +496,103 @@ function parseField(body: string): Field {
 		}
 	}
 	return field;
+}
+
+function parseRelation(body: string): RelationDef {
+	let raw = body.trim();
+	if (raw.startsWith(":")) {
+		raw = raw.slice(1).trim();
+	}
+	const parts = raw.split(/\s+/).filter(Boolean);
+	if (parts.length < 2) {
+		throw new Error(`scrt: invalid relation declaration ${body}`);
+	}
+	const field = parts[0]!;
+	let targetToken = parts[1]!;
+	if (targetToken.includes("->")) {
+		const [, right = ""] = targetToken.split("->", 2);
+		targetToken = right.trim();
+	}
+	let targetSchema = "";
+	let targetField = "";
+	if (targetToken.includes(".")) {
+		[targetSchema, targetField] = targetToken.split(".", 2);
+	} else if (targetToken.includes(":")) {
+		[targetSchema, targetField] = targetToken.split(":", 2);
+	}
+	if (!targetSchema || !targetField) {
+		throw new Error(`scrt: invalid relation target ${targetToken}`);
+	}
+	let onDelete = "restrict";
+	let onUpdate = "restrict";
+	for (const token of parts.slice(2)) {
+		const lower = token.toLowerCase();
+		if (hasAttrPrefix(lower, "ondelete")) {
+			onDelete = unquoteAttrValue(extractAttrValue(token)).toLowerCase();
+		} else if (hasAttrPrefix(lower, "onupdate")) {
+			onUpdate = unquoteAttrValue(extractAttrValue(token)).toLowerCase();
+		}
+	}
+	return new RelationDef(field, field, targetSchema.trim(), targetField.trim(), onDelete, onUpdate);
+}
+
+function parseComplexType(raw: string): { kind: FieldKind; targetSchema: string; targetField: string; isArray?: boolean; isMap?: boolean; isObject?: boolean; arrayElemType?: string; mapKeyType?: string; mapValueType?: string; objectSchema?: string } | null {
+	const typ = raw.trim();
+	if (typ.startsWith("[]")) {
+		const elem = typ.slice(2).trim();
+		if (!elem) {
+			throw new Error(`scrt: invalid array type ${raw}`);
+		}
+		return { kind: FieldKind.String, targetSchema: "", targetField: "", isArray: true, arrayElemType: elem };
+	}
+	if (typ.toLowerCase().startsWith("map[")) {
+		const open = typ.indexOf("[");
+		const close = typ.indexOf("]");
+		if (open === -1 || close === -1 || close <= open + 1 || close >= typ.length - 1) {
+			throw new Error(`scrt: invalid map type ${raw}`);
+		}
+		const key = typ.slice(open + 1, close).trim();
+		const value = typ.slice(close + 1).trim();
+		if (!key || !value) {
+			throw new Error(`scrt: invalid map type ${raw}`);
+		}
+		return { kind: FieldKind.String, targetSchema: "", targetField: "", isMap: true, mapKeyType: key, mapValueType: value };
+	}
+	if (typ.toLowerCase().startsWith("object:")) {
+		const schemaName = typ.slice("object:".length).trim();
+		if (!schemaName) {
+			throw new Error(`scrt: invalid object type ${raw}`);
+		}
+		return { kind: FieldKind.String, targetSchema: "", targetField: "", isObject: true, objectSchema: schemaName };
+	}
+	return null;
+}
+
+function synthesizeInlineRelations(schema: Schema): void {
+	const seen = new Set(schema.relations.map((rel) => rel.field.toLowerCase()));
+	for (const field of schema.fields) {
+		if (field.kind !== FieldKind.Ref || !field.targetSchema || !field.targetField) {
+			continue;
+		}
+		if (!field.onDelete && !field.onUpdate) {
+			continue;
+		}
+		const key = field.name.toLowerCase();
+		if (seen.has(key)) {
+			continue;
+		}
+		schema.relations.push(
+			new RelationDef(
+				field.name,
+				field.name,
+				field.targetSchema,
+				field.targetField,
+				field.onDelete || "restrict",
+				field.onUpdate || "restrict",
+			),
+		);
+		seen.add(key);
+	}
 }
 
 function splitFieldParts(body: string): [string, string, string] {
@@ -438,11 +636,71 @@ function interpretFieldType(raw: string): { kind: FieldKind; targetSchema: strin
 		case typ === "duration":
 			return { kind: FieldKind.Duration, targetSchema: "", targetField: "" };
 		case typ.startsWith("ref:"):
-			const [, schemaName, fieldName] = raw.split(":");
+			const parts = raw.split(":");
+			if (parts.length !== 3) {
+				throw new Error(`scrt: invalid ref declaration ${raw}`);
+			}
+			const [, schemaName, fieldName] = parts;
 			return { kind: FieldKind.Ref, targetSchema: schemaName ?? "", targetField: fieldName ?? "" };
 		default:
+			if (isIdentifier(raw)) {
+				return { kind: FieldKind.Ref, targetSchema: raw, targetField: "" };
+			}
 			throw new Error(`scrt: unsupported field type ${raw}`);
 	}
+}
+
+function isIdentifier(value: string): boolean {
+	if (!value) {
+		return false;
+	}
+	for (let i = 0; i < value.length; i += 1) {
+		const ch = value[i]!;
+		const isAlpha = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z");
+		const isNum = ch >= "0" && ch <= "9";
+		if (ch === "_" || isAlpha || (i > 0 && isNum)) {
+			continue;
+		}
+		return false;
+	}
+	return true;
+}
+
+function hasAttrPrefix(lowerAttr: string, key: string): boolean {
+	return lowerAttr.startsWith(`${key}=`) || lowerAttr.startsWith(`${key}:`);
+}
+
+function extractAttrValue(attr: string): string {
+	const eq = attr.indexOf("=");
+	if (eq >= 0) {
+		return attr.slice(eq + 1).trim();
+	}
+	const colon = attr.indexOf(":");
+	if (colon >= 0) {
+		return attr.slice(colon + 1).trim();
+	}
+	return "";
+}
+
+function unquoteAttrValue(raw: string): string {
+	const trimmed = raw.trim();
+	if (!trimmed) {
+		return "";
+	}
+	const first = trimmed[0]!;
+	const last = trimmed[trimmed.length - 1]!;
+	if ((first === '"' && last === '"') || (first === "'" && last === "'") || (first === "`" && last === "`")) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+function parseEnumValues(raw: string): string[] {
+	const value = unquoteAttrValue(raw);
+	if (!value) {
+		return [];
+	}
+	return value.split("|").map((part) => part.trim()).filter(Boolean);
 }
 
 function splitFieldAttributes(attrChunk: string): string[] {
@@ -701,6 +959,9 @@ function resolveFieldKind(doc: Document, schema: Schema, idx: number, stack: Set
 	if (!targetSchema) {
 		throw new Error(`scrt: schema ${schema.name} references unknown schema ${field.targetSchema}`);
 	}
+	if (!field.targetField) {
+		field.targetField = inferReferenceTargetField(targetSchema);
+	}
 	const targetIdx = targetSchema.tryFieldIndex(field.targetField);
 	if (targetIdx === undefined) {
 		throw new Error(`scrt: schema ${schema.name} references unknown field ${field.targetSchema}.${field.targetField}`);
@@ -713,6 +974,20 @@ function resolveFieldKind(doc: Document, schema: Schema, idx: number, stack: Set
 		field.pendingDefault = "";
 	}
 	return resolved;
+}
+
+function inferReferenceTargetField(target: Schema): string {
+	for (const field of target.fields) {
+		if (field.primaryKey) {
+			return field.name;
+		}
+	}
+	for (const field of target.fields) {
+		if (field.name.toLowerCase() === "id") {
+			return field.name;
+		}
+	}
+	throw new Error(`scrt: cannot infer reference field for schema ${target.name}; add a primary key, an ID field, or use explicit ref:${target.name}:<Field>`);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

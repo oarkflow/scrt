@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 
+	"github.com/oarkflow/scrt/codec"
 	"github.com/oarkflow/scrt/schema"
 )
 
@@ -14,6 +15,14 @@ type Backend interface {
 	NextAutoValue(schemaName string, sch *schema.Schema, field string) (uint64, error)
 	LoadMeta(schemaName string) (*SnapshotMeta, error)
 	ListMeta() ([]*SnapshotMeta, error)
+	LookupByUint(schemaName string, sch *schema.Schema, field string, key uint64, dst codec.Row) (bool, error)
+	LookupByString(schemaName string, sch *schema.Schema, field, key string, dst codec.Row) (bool, error)
+	DeleteByUintKey(schemaName string, sch *schema.Schema, field string, key uint64) (bool, error)
+	DeleteByStringKey(schemaName string, sch *schema.Schema, field, key string) (bool, error)
+	ReplaceByUintKey(schemaName string, sch *schema.Schema, field string, key uint64, replacement []byte) (bool, error)
+	ReplaceByStringKey(schemaName string, sch *schema.Schema, field, key string, replacement []byte) (bool, error)
+	SearchFullText(schemaName string, sch *schema.Schema, query string, limit int) ([]uint64, error)
+	LookupRowEffective(schemaName string, sch *schema.Schema, rowID uint64, dst codec.Row) (bool, error)
 }
 
 // SnapshotBackend wraps SnapshotStore to satisfy the Backend interface for
@@ -75,6 +84,62 @@ func (b *SnapshotBackend) ListMeta() ([]*SnapshotMeta, error) {
 		return nil, ErrBackendUnavailable
 	}
 	return b.store.ListMeta()
+}
+
+func (b *SnapshotBackend) LookupByUint(schemaName string, sch *schema.Schema, field string, key uint64, dst codec.Row) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.LookupByUint(schemaName, sch, field, key, dst)
+}
+
+func (b *SnapshotBackend) LookupByString(schemaName string, sch *schema.Schema, field, key string, dst codec.Row) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.LookupByString(schemaName, sch, field, key, dst)
+}
+
+func (b *SnapshotBackend) DeleteByUintKey(schemaName string, sch *schema.Schema, field string, key uint64) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.DeleteByUintKey(schemaName, sch, field, key)
+}
+
+func (b *SnapshotBackend) DeleteByStringKey(schemaName string, sch *schema.Schema, field, key string) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.DeleteByStringKey(schemaName, sch, field, key)
+}
+
+func (b *SnapshotBackend) ReplaceByUintKey(schemaName string, sch *schema.Schema, field string, key uint64, replacement []byte) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.ReplaceByUintKey(schemaName, sch, field, key, replacement)
+}
+
+func (b *SnapshotBackend) ReplaceByStringKey(schemaName string, sch *schema.Schema, field, key string, replacement []byte) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.ReplaceByStringKey(schemaName, sch, field, key, replacement)
+}
+
+func (b *SnapshotBackend) SearchFullText(schemaName string, sch *schema.Schema, query string, limit int) ([]uint64, error) {
+	if b == nil {
+		return nil, ErrBackendUnavailable
+	}
+	return b.store.SearchFullText(schemaName, sch, query, limit)
+}
+
+func (b *SnapshotBackend) LookupRowEffective(schemaName string, sch *schema.Schema, rowID uint64, dst codec.Row) (bool, error) {
+	if b == nil {
+		return false, ErrBackendUnavailable
+	}
+	return b.store.LookupRowEffective(schemaName, sch, rowID, dst)
 }
 
 var nullBackend *SnapshotBackend
